@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "XKG Desktop",
+  "version": "0.1.0",
+  "identifier": "com.xkg.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "capture",
+        "title": "XKG Capture",
+        "width": 480,
+        "height": 280,
+        "resizable": false,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "capture.html"
+      },
+      {
+        "label": "settings",
+        "title": "xkg-desktop — Settings",
+        "width": 720,
+        "height": 520,
+        "resizable": true,
+        "minWidth": 520,
+        "minHeight": 400,
+        "decorations": true,
+        "visible": false,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ]
+  }
+}

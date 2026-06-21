@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability for XKG Desktop","local":true,"windows":["capture","settings"],"permissions":["core:default","core:window:default","core:window:allow-show","core:window:allow-hide","core:window:allow-set-focus","core:webview:default","core:event:default","autostart:default"]}}

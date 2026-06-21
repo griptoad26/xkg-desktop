@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XKG Capture</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 14px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0f172a; color: #e2e8f0;
+            height: 100vh; display: flex; flex-direction: column;
+        }
+        h1 {
+            font-size: 0.85rem; margin: 0 0 8px 0;
+            color: #94a3b8; font-weight: 600; letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        textarea {
+            flex: 1; width: 100%;
+            background: #1e293b; color: #e2e8f0;
+            border: 1px solid #334155; border-radius: 6px;
+            padding: 10px; font: inherit; font-size: 0.95rem;
+            resize: none; outline: none;
+        }
+        textarea:focus { border-color: #3b82f6; }
+        .meta {
+            display: flex; gap: 8px; margin-top: 8px;
+            font-size: 0.8rem;
+        }
+        .meta input {
+            flex: 1; background: #1e293b; color: #e2e8f0;
+            border: 1px solid #334155; border-radius: 4px;
+            padding: 4px 8px; font: inherit; font-size: 0.85rem;
+        }
+        .actions {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 10px; gap: 8px;
+        }
+        .hint { color: #64748b; font-size: 0.75rem; }
+        .status {
+            font-size: 0.8rem; padding: 3px 8px; border-radius: 4px;
+            display: none;
+        }
+        .status.ok    { display: inline; background: rgba(34,197,94,0.2);  color: #4ade80; }
+        .status.dup   { display: inline; background: rgba(234,179,8,0.2);  color: #fbbf24; }
+        .status.err   { display: inline; background: rgba(239,68,68,0.2);  color: #fca5a5; }
+        button {
+            background: #3b82f6; color: white; border: none;
+            padding: 7px 16px; border-radius: 4px; cursor: pointer;
+            font-size: 0.9rem; font-weight: 500;
+        }
+        button:hover { background: #2563eb; }
+        button:disabled { background: #475569; cursor: wait; }
+        button.cancel { background: #475569; }
+        button.cancel:hover { background: #334155; }
+    </style>
+</head>
+<body>
+    <h1>XKG Capture <span class="hint">Ctrl+Shift+X from anywhere</span></h1>
+    <textarea id="text" placeholder="Type your note, idea, link, or quote…  (Cmd/Ctrl+Enter to save, Esc to close)"></textarea>
+    <div class="meta">
+        <input id="title" placeholder="Title (optional)">
+        <input id="topic" placeholder="Topic" value="general">
+    </div>
+    <div class="actions">
+        <span id="status" class="status"></span>
+        <div style="display:flex; gap:8px;">
+            <button class="cancel" onclick="closeWindow()">Cancel</button>
+            <button id="save" onclick="save()">Save</button>
+        </div>
+    </div>
+
+<script>
+const { invoke } = window.__TAURI__.core;
+
+const textEl = document.getElementById('text');
+const titleEl = document.getElementById('title');
+const topicEl = document.getElementById('topic');
+const saveBtn = document.getElementById('save');
+const statusEl = document.getElementById('status');
+
+// Auto-focus the textarea on load
+textEl.focus();
+
+async function save() {
+    const text = textEl.value.trim();
+    if (!text) {
+        showStatus('Type something first', 'err');
+        return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+        const result = await invoke('import_text', {
+            request: {
+                text,
+                title: titleEl.value.trim() || null,
+                topic: topicEl.value.trim() || null,
+                source: 'xkg-desktop',
+            }
+        });
+        if (result.ok) {
+            if (result.duplicate) {
+                showStatus('Already captured', 'dup');
+            } else {
+                showStatus('Saved ✓', 'ok');
+                textEl.value = '';
+                titleEl.value = '';
+            }
+            // Auto-close the window after a short pause
+            setTimeout(closeWindow, 700);
+        } else {
+            showStatus('Error: ' + (result.error || 'unknown'), 'err');
+        }
+    } catch (e) {
+        showStatus('Failed: ' + e, 'err');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+    }
+}
+
+function showStatus(msg, kind) {
+    statusEl.textContent = msg;
+    statusEl.className = 'status ' + kind;
+    setTimeout(() => {
+        statusEl.className = 'status';
+        statusEl.textContent = '';
+    }, 3000);
+}
+
+async function closeWindow() {
+    try {
+        await invoke('plugin:window|close', { label: 'capture' });
+    } catch (e) {
+        // Fallback: just hide via the close command
+        try { await invoke('close_window'); } catch (_) {}
+    }
+}
+
+// Keyboard shortcuts inside the dialog
+textEl.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        save();
+    }
+});
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        closeWindow();
+    }
+});
+</script>
+</body>
+</html>
