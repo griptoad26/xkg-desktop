@@ -26,11 +26,11 @@
       {
         "label": "settings",
         "title": "xkg-desktop — Settings",
-        "width": 720,
-        "height": 520,
+        "width": 1200,
+        "height": 820,
         "resizable": true,
-        "minWidth": 520,
-        "minHeight": 400,
+        "minWidth": 900,
+        "minHeight": 600,
         "decorations": true,
         "visible": false,
         "url": "index.html"

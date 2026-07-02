@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ChatGPT - Smoke test thread</title>
+</head>
+<body>
+  <main>
+    <div data-message-author-role="user" data-message-id="smoke-1">
+      <div class="whitespace-pre-wrap">What is rusqlite?</div>
+    </div></div>
+
+    <div data-message-author-role="assistant" data-message-id="smoke-2">
+      <div class="markdown prose">
+        <p>rusqlite is a Rust binding for SQLite. It supports FTS5 full-text search.</p>
+      </div>
+    </div></div>
+
+    <div data-message-author-role="user" data-message-id="smoke-3">
+      <div class="whitespace-pre-wrap">Show me how to open a database.</div>
+    </div></div>
+
+    <div data-message-author-role="assistant" data-message-id="smoke-4">
+      <div class="markdown prose">
+        <pre><code class="language-rust">let conn = Connection::open("x.db")?;</code></pre>
+        <p>That's it.</p>
+      </div>
+    </div></div>
+  </main>
+</body>
+</html>

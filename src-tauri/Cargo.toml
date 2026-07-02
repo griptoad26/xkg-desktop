@@ -19,7 +19,12 @@ serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 chrono = "0.4"
+xkg-core = { path = "/home/x2/.openclaw/workspace/xkg-core" }
+url = "2.5"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tempfile = "3.10"

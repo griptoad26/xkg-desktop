@@ -7,12 +7,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod shortcuts;
+mod xkg;
 
 use serde::Serialize;
 use shortcuts::{import_text, register_shortcut, ShortcutState2};
 use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
+
+use xkg::{
+    capture_chatgpt_html, default_db_path, get_conversation_messages, list_conversations,
+    open_store, search_messages, xkg_stats, Store, StorePath,
+};
 
 // AppState removed — we use shortcuts::ShortcutState2 for the
 // last-import cache (set by import_text).
@@ -105,6 +111,11 @@ fn main() {
             get_platform_info,
             get_last_import_info,
             test_hub_connection,
+            capture_chatgpt_html,
+            list_conversations,
+            search_messages,
+            get_conversation_messages,
+            xkg_stats,
         ])
         .setup(|app| {
             // Register the system-wide shortcut (Ctrl+Shift+X by default).
@@ -123,6 +134,31 @@ fn main() {
             if let Ok(data_dir) = app.path().app_data_dir() {
                 let _ = std::fs::create_dir_all(&data_dir);
             }
+
+            // Open the xkg-core CaptureStore at ~/.config/xkg-desktop/captures.db
+            // and hand it to every Tauri command via managed state. This is
+            // the local-first SQLite (FTS5) store the capture/search UI reads.
+            match default_db_path() {
+                Ok(path) => {
+                    match open_store(&path) {
+                        Ok(store) => {
+                            eprintln!(
+                                "[xkg-desktop] capture store opened at {}",
+                                path.display()
+                            );
+                            app.manage(Store(std::sync::Mutex::new(store)));
+                            app.manage(StorePath(path));
+                        }
+                        Err(e) => {
+                            eprintln!("[xkg-desktop] failed to open capture store: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[xkg-desktop] could not resolve db path: {}", e);
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
