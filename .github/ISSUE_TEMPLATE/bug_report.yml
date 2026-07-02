@@ -1,0 +1,81 @@
+name: Bug Report
+description: Report a bug in xkg-desktop (Tauri).
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      content: |
+        Thanks for filing a bug. Please fill in the sections below so we can reproduce and fix it quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: xkg-desktop version
+      description: The version shown in the app's About dialog (or the tag, e.g. v0.1.0).
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Which desktop OS were you using?
+      options:
+        - macOS
+        - Windows
+        - Ubuntu / Debian
+        - Other Linux
+    validations:
+      required: true
+
+  - type: input
+    id: llm
+    attributes:
+      label: LLM in use
+      description: Which LLM were you capturing from when the bug happened? (ChatGPT, Claude, Grok, Gemini, Perplexity, Other)
+      placeholder: ChatGPT
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. Include any error message verbatim.
+      placeholder: |
+        I clicked "Capture" while a ChatGPT conversation was open and the app crashed with: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps we can follow to reproduce the bug.
+      placeholder: |
+        1. Open xkg-desktop
+        2. Launch ChatGPT from the in-app browser
+        3. Send a message
+        4. Observe that the message is not saved
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste log lines or attach screenshots. On Linux/macOS, logs are at ~/.config/xkg-desktop/logs/.
+    validations:
+      required: false

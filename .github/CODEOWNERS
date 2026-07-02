@@ -1,0 +1,21 @@
+# CODEOWNERS — xkg-desktop
+# xkg-lead is the default reviewer for application source changes.
+# Add additional reviewers below as the team grows.
+
+# Default reviewer for everything
+*                       @xkg-lead
+
+# Frontend (Svelte/TypeScript)
+/src/                   @xkg-lead
+/public/                @xkg-lead
+/index.html             @xkg-lead
+
+# Backend (Rust / Tauri)
+/src-tauri/             @xkg-lead
+/src-tauri/src/         @xkg-lead
+/src-tauri/Cargo.toml   @xkg-lead
+/src-tauri/tauri.conf.json @xkg-lead
+
+# Build / packaging is reviewer-owned (xkg-reviewer) — don't gate on xkg-lead.
+/.github/workflows/    @xkg-reviewer
+/CODEOWNERS             @xkg-reviewer
