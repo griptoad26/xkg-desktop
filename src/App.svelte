@@ -2,8 +2,9 @@
   import Settings from './Settings.svelte';
   import Capture from './Capture.svelte';
   import Graph from './Graph.svelte';
+  import Sync from './Sync.svelte';
 
-  let view = 'capture';   // 'capture' | 'settings' | 'graph'
+  let view = 'capture';   // 'capture' | 'graph' | 'sync' | 'settings'
 </script>
 
 <main>
@@ -19,6 +20,11 @@
       data-testid="tab-graph"
     >🕸️ Graph</button>
     <button
+      class:active={view === 'sync'}
+      on:click={() => (view = 'sync')}
+      data-testid="tab-sync"
+    >🔄 Sync</button>
+    <button
       class:active={view === 'settings'}
       on:click={() => (view = 'settings')}
       data-testid="tab-settings"
@@ -29,6 +35,8 @@
     <Capture />
   {:else if view === 'graph'}
     <Graph />
+  {:else if view === 'sync'}
+    <Sync />
   {:else}
     <Settings />
   {/if}

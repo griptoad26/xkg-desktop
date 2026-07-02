@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod shortcuts;
+mod sync_command;
 mod xkg;
 
 use serde::Serialize;
@@ -15,6 +16,7 @@ use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 
+use sync_command::{local_encryption_key, sync_now};
 use xkg::{
     capture_html, default_db_path, get_conversation_messages, graph_query, list_conversations,
     open_store, search_messages, xkg_stats, Store, StorePath,
@@ -117,6 +119,8 @@ fn main() {
             get_conversation_messages,
             xkg_stats,
             graph_query,
+            sync_now,
+            local_encryption_key,
         ])
         .setup(|app| {
             // Register the system-wide shortcut (Ctrl+Shift+X by default).
