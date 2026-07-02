@@ -16,7 +16,7 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 
 use xkg::{
-    capture_html, default_db_path, get_conversation_messages, list_conversations,
+    capture_html, default_db_path, get_conversation_messages, graph_query, list_conversations,
     open_store, search_messages, xkg_stats, Store, StorePath,
 };
 
@@ -116,6 +116,7 @@ fn main() {
             search_messages,
             get_conversation_messages,
             xkg_stats,
+            graph_query,
         ])
         .setup(|app| {
             // Register the system-wide shortcut (Ctrl+Shift+X by default).

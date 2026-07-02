@@ -30,6 +30,7 @@ use serde::Serialize;
 use xkg_core::capture::CaptureStore;
 use xkg_core::extractor::get_extractor;
 use xkg_core::extractors::chatgpt::extract_title;
+use xkg_core::graph::{GraphQueryResult, GraphResult};
 use xkg_core::{Conversation, LLMKind, Message};
 
 /// Thread-safe wrapper around [`CaptureStore`] for use as Tauri state.
@@ -232,6 +233,23 @@ pub fn xkg_stats(
         messages,
         db_path: store_path.0.display().to_string(),
     })
+}
+
+/// Build a topic graph for `query`. Returns nodes (topics + their
+/// message ids) and edges (pairs of topics co-mentioned by the same
+/// message, weighted by the number of shared messages).
+///
+/// Phase 3 deliverable: backs the Graph.svelte tab. Defaults to a
+/// 20-node / 40-edge graph which is plenty for the "circle of dots +
+/// lines" SVG visualization.
+#[tauri::command]
+pub fn graph_query(
+    query: String,
+    store: tauri::State<'_, Store>,
+) -> Result<GraphQueryResult, String> {
+    let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
+    let res: GraphResult<GraphQueryResult> = guard.graph_query(&query, 20, 40);
+    res.map_err(|e| format!("graph_query: {e}"))
 }
 
 // ---------------------------------------------------------------------------
