@@ -1,6 +1,6 @@
 //! xkg-core integration for xkg-desktop.
 //!
-//! Phase 1 deliverable: embed the [`xkg_core::CaptureStore`] behind a
+//! Phase 2 deliverable: embed the [`xkg_core::CaptureStore`] behind a
 //! small set of Tauri commands the Svelte UI can call. The store is opened
 //! once on app startup and handed to every command via managed state.
 //!
@@ -12,8 +12,10 @@
 //!
 //! ## Commands
 //!
-//! * [`capture_chatgpt_html`] — given a ChatGPT DOM HTML dump, run the
-//!   ChatGPT extractor, persist a new conversation, and return a summary.
+//! * [`capture_html`] — given a DOM HTML dump + LLM kind, run the matching
+//!   extractor from the [`xkg_core::extractor`] registry, persist a new
+//!   conversation, and return a summary. Phase 2: polymorphic across
+//!   ChatGPT / Claude / Grok (Phase 1 was ChatGPT-only).
 //! * [`list_conversations`] — every conversation in the local store,
 //!   most recently updated first.
 //! * [`search_messages`] — full-text search via xkg-core's FTS5 index.
@@ -26,8 +28,8 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use xkg_core::capture::CaptureStore;
-use xkg_core::extractors::chatgpt::{extract_title, ChatGPTExtractor};
-use xkg_core::extractor::Extractor;
+use xkg_core::extractor::get_extractor;
+use xkg_core::extractors::chatgpt::extract_title;
 use xkg_core::{Conversation, LLMKind, Message};
 
 /// Thread-safe wrapper around [`CaptureStore`] for use as Tauri state.
@@ -95,34 +97,57 @@ pub fn open_store(db_path: &std::path::Path) -> Result<CaptureStore, String> {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-/// Capture a ChatGPT DOM HTML dump.
+/// Capture a DOM HTML dump from one of the supported LLMs.
+///
+/// Phase 2 replaces the Phase 1 [`capture_chatgpt_html`] (which hardcoded
+/// the ChatGPT extractor) with a polymorphic command that looks the right
+/// extractor up via [`xkg_core::extractor::get_extractor`]. The `llm`
+/// argument selects which extractor to run — `"chatgpt"`, `"claude"`, or
+/// `"grok"` for now; the registry returns `None` for not-yet-implemented
+/// LLMs (Gemini, Perplexity) and we surface that as an error.
 ///
 /// What it does, top to bottom:
-/// 1. Runs the [`ChatGPTExtractor`] over `html`.
-/// 2. Pulls the conversation title out of `<title>`.
-/// 3. Opens a new (or upserted) [`Conversation`] in the local store.
-/// 4. For each extracted message, writes a [`Message`] with the
+/// 1. Parses `llm` into an [`LLMKind`] and resolves the extractor via the
+///    registry. Errors out for unknown LLMs or unimplemented extractors.
+/// 2. Runs the resolved extractor over `html`.
+/// 3. Pulls the conversation title out of `<title>` (ChatGPT-flavored
+///    for now — Phase 3+ will let each extractor supply its own title).
+/// 4. Opens a new (or upserted) [`Conversation`] in the local store, with
+///    `conv.llm` set from the resolved kind.
+/// 5. For each extracted message, writes a [`Message`] with the
 ///    `(conversation_id, client_msg_id)` dedupe key.
-/// 5. Returns a [`CaptureResult`] so the UI can show "captured N messages".
+/// 6. Returns a [`CaptureResult`] so the UI can show "captured N messages".
 #[tauri::command]
-pub fn capture_chatgpt_html(
+pub fn capture_html(
     html: String,
+    llm: String, // "chatgpt" | "claude" | "grok"
     store: tauri::State<'_, Store>,
 ) -> Result<CaptureResult, String> {
-    let extractor = ChatGPTExtractor;
+    // 1. Resolve LLM kind.
+    let kind = match llm.as_str() {
+        "chatgpt" => LLMKind::Chatgpt,
+        "claude" => LLMKind::Claude,
+        "grok" => LLMKind::Grok,
+        other => return Err(format!("unsupported LLM: {}", other)),
+    };
+
+    // 2. Look up the extractor via the registry.
+    let extractor =
+        get_extractor(kind).ok_or_else(|| format!("no extractor registered for {:?}", kind))?;
+
+    // 3. Run it.
     let extracted = extractor
         .extract(&html)
         .map_err(|e| format!("extractor failed: {e}"))?;
 
+    // 4. Title (ChatGPT-flavored for now; per-extractor titles land later).
     let title = extract_title(&html);
     let now = chrono::Utc::now();
 
-    let mut conv = Conversation::new(LLMKind::Chatgpt, title.clone());
-    // Use a stable id derived from the first extracted `client_msg_id`
-    // so re-extracts of the same DOM land in the same conversation row.
+    // 5. Upsert the conversation.
+    let mut conv = Conversation::new(kind, title.clone());
     if let Some(first) = extracted.first() {
         conv.id = Some(first.client_msg_id.clone());
-        // source_url: leave None for now; Phase 2 wires up the real URL.
     }
     conv.source_url = None;
     conv.created_at = now;

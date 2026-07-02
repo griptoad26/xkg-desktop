@@ -16,7 +16,7 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 
 use xkg::{
-    capture_chatgpt_html, default_db_path, get_conversation_messages, list_conversations,
+    capture_html, default_db_path, get_conversation_messages, list_conversations,
     open_store, search_messages, xkg_stats, Store, StorePath,
 };
 
@@ -111,7 +111,7 @@ fn main() {
             get_platform_info,
             get_last_import_info,
             test_hub_connection,
-            capture_chatgpt_html,
+            capture_html,
             list_conversations,
             search_messages,
             get_conversation_messages,

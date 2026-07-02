@@ -12,6 +12,7 @@
 
   // Capture textarea
   let captureHtml = '';
+  let captureLlm = 'chatgpt'; // 'chatgpt' | 'claude' | 'grok'
   let captureStatus = null;   // 'idle' | 'saving' | 'ok' | 'err'
   let captureMsg = '';
 
@@ -76,15 +77,16 @@
     const html = captureHtml.trim();
     if (!html) {
       captureStatus = 'err';
-      captureMsg = 'Paste some ChatGPT DOM HTML first';
+      captureMsg = 'Paste some DOM HTML first';
       return;
     }
     captureStatus = 'saving';
     captureMsg = '';
     try {
-      const result = await invoke('capture_chatgpt_html', { html });
+      const result = await invoke('capture_html', { html, llm: captureLlm });
       captureStatus = 'ok';
-      captureMsg = `Captured ${result.inserted}/${result.extracted} messages${
+      const llmLabel = captureLlm.charAt(0).toUpperCase() + captureLlm.slice(1);
+      captureMsg = `[${llmLabel}] Captured ${result.inserted}/${result.extracted} messages${
         result.title ? ` · "${result.title}"` : ''
       }`;
       // Refresh sidebar + stats so the new conversation shows up.
@@ -232,16 +234,24 @@
 
     <!-- ============ BOTTOM: CAPTURE ============ -->
     <section class="capture-box">
-      <h2>Capture ChatGPT HTML</h2>
+      <h2>Capture LLM HTML</h2>
       <p class="hint">
-        Paste the inner HTML of a ChatGPT conversation page (e.g. open the
-        page in your browser DevTools, copy <code>document.documentElement.outerHTML</code>,
-        paste here). The ChatGPT extractor will mine it for messages and
-        save them locally.
+        Paste the inner HTML of a conversation page (open the page in your
+        browser DevTools, copy <code>document.documentElement.outerHTML</code>,
+        paste here). Choose which LLM's extractor to run — Phase 2 supports
+        ChatGPT, Claude, and Grok.
       </p>
+      <div class="capture-controls">
+        <label for="capture-llm">LLM:</label>
+        <select id="capture-llm" bind:value={captureLlm} data-testid="xkg-capture-llm-select">
+          <option value="chatgpt">ChatGPT</option>
+          <option value="claude">Claude</option>
+          <option value="grok">Grok</option>
+        </select>
+      </div>
       <textarea
         bind:value={captureHtml}
-        placeholder='<!doctype html><html>… paste a ChatGPT DOM dump here …</html>'
+        placeholder={'<!doctype html><html>… paste a ChatGPT / Claude / Grok DOM dump here …</html>'}
         rows="6"
         data-testid="xkg-capture-textarea"
       ></textarea>
@@ -387,6 +397,20 @@
     background: #2a2a4a; padding: 0.05rem 0.35rem; border-radius: 3px;
     font-size: 0.85em;
   }
+  .capture-controls {
+    display: flex; align-items: center; gap: 0.5rem;
+    margin: 0.25rem 0 0.6rem;
+  }
+  .capture-controls label {
+    color: #94a3b8; font-size: 0.85rem; font-weight: 500;
+  }
+  .capture-controls select {
+    background: #1a1a2e; color: #e8e8f0;
+    border: 1px solid #3a3a5a; border-radius: 4px;
+    padding: 0.35rem 0.6rem; font: inherit; font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .capture-controls select:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
   .capture-box textarea {
     width: 100%;
     background: #1a1a2e; color: #e8e8f0;
