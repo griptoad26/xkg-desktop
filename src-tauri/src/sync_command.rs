@@ -28,7 +28,7 @@ use xkg_core::capture::CaptureStore;
 use xkg_core::sync::{Device, SyncClient, SyncError};
 use xkg_core::sync_http::{SyncHttpClient, UploadResult};
 
-use crate::StorePath;
+use crate::xkg::StorePath;
 
 /// What `sync_now` returns to the UI.
 #[derive(Debug, Clone, Serialize)]
