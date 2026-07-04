@@ -164,6 +164,9 @@
   }
 
   // --- Phase 5a: continue in browser ---
+  // The Rust side (`build_continue_url` in xkg.rs) owns the URL
+  // templates for each LLM. We just forward `llm` + `title` and let
+  // the Tauri shell plugin launch the system browser.
   async function continueInBrowser(llm, title) {
     continueStatus = 'saving';
     continueMsg = '';
