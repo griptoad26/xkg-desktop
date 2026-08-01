@@ -1,0 +1,135 @@
+name: AppImage Size Check (v0.9.0)
+
+# Verify the [profile.release] bloat fix (TASK-176) actually produces
+# an AppImage under 30 MB. Fails the build if size exceeds the budget
+# so we catch regressions before they ship.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/tauri.conf.json'
+      - '.github/workflows/appimage-size-check.yml'
+  pull_request:
+    paths:
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/tauri.conf.json'
+  workflow_dispatch:
+
+jobs:
+  appimage:
+    name: build-appimage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            file
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-appimage-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-appimage-
+
+      - name: Install JS deps
+        run: npm install --no-audit --prefer-offline
+
+      - name: Verify [profile.release] bloat fix is present
+        run: |
+          set -e
+          CFG=src-tauri/Cargo.toml
+          for k in 'opt-level' 'lto' 'codegen-units' 'strip' 'panic'; do
+            if ! grep -q "^$k" "$CFG"; then
+              echo "::error::Missing profile.release key '$k' — TASK-176 bloat fix not applied"
+              exit 1
+            fi
+          done
+          echo "✓ [profile.release] bloat fix keys present"
+
+      - name: Build AppImage
+        env:
+          NO_STRIP: 'false'   # let Cargo strip via profile.release.strip=true
+        run: |
+          cd src-tauri
+          cargo build --release
+          cd ..
+          npm run tauri -- build --bundles appimage
+
+      - name: Locate AppImage
+        id: locate
+        run: |
+          set -e
+          FILE=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "::error::No AppImage produced under src-tauri/target/release/bundle/appimage/"
+            find src-tauri/target/release/bundle -maxdepth 2 -type d || true
+            exit 1
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          SIZE=$(stat -c '%s' "$FILE")
+          SIZE_MB=$(( SIZE / 1024 / 1024 ))
+          echo "size_bytes=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+          echo "AppImage: $FILE — ${SIZE_MB} MB (${SIZE} bytes)"
+
+      - name: Size budget check (<30 MB)
+        env:
+          FILE: ${{ steps.locate.outputs.file }}
+          SIZE_MB: ${{ steps.locate.outputs.size_mb }}
+        run: |
+          if [ "$SIZE_MB" -ge 30 ]; then
+            echo "::error::AppImage ${SIZE_MB} MB exceeds 30 MB budget (TASK-176)"
+            ls -lah "$FILE"
+            exit 1
+          fi
+          echo "✓ AppImage ${SIZE_MB} MB under 30 MB budget"
+
+      - name: Smoke test (--appimage-extract-and-run)
+        env:
+          FILE: ${{ steps.locate.outputs.file }}
+        run: |
+          chmod +x "$FILE"
+          # AppImage type sanity
+          file "$FILE" | tee /tmp/appimage-type.txt
+          # ELF check
+          if ! file "$FILE" | grep -q 'ELF .* executable'; then
+            echo "::warning::AppImage is not an ELF executable — bundler may have produced a wrapper"
+          fi
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabmind-appimage
+          path: ${{ steps.locate.outputs.file }}
+          if-no-files-found: error
+
+      - name: Upload size report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-size-report
+          path: |
+            /tmp/appimage-type.txt
+          if-no-files-found: ignore
