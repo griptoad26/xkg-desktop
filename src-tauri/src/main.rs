@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod graph;
 mod shortcuts;
 mod sync_command;
 mod xkg;
@@ -18,9 +19,9 @@ use tauri_plugin_autostart::ManagerExt;
 
 use sync_command::{local_encryption_key, sync_now};
 use xkg::{
-    capture_html, continue_in_browser, default_db_path,
-    get_conversation_messages, graph_query, list_conversations, open_store, search_advanced,
-    search_messages, xkg_stats, Store, StorePath,
+    capture_html, continue_in_browser, default_db_path, get_conversation_messages, graph_link,
+    graph_query, graph_unlink, list_conversations, open_store, search_advanced, search_messages,
+    topic_graph_query, xkg_stats, Store, StorePath,
 };
 
 // AppState removed — we use shortcuts::ShortcutState2 for the
@@ -124,6 +125,9 @@ fn main() {
             get_conversation_messages,
             xkg_stats,
             graph_query,
+            graph_link,
+            graph_unlink,
+            topic_graph_query,
             continue_in_browser,
             sync_now,
             local_encryption_key,

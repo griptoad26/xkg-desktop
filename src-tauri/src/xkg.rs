@@ -31,6 +31,7 @@ use xkg_core::capture::{CaptureStore, SearchFilters, SearchHit};
 use xkg_core::extractor::get_extractor;
 use xkg_core::extractors::chatgpt::extract_title;
 use xkg_core::graph::{GraphQueryResult, GraphResult};
+use xkg_core::linker::{LinkedConv, SubGraph};
 use xkg_core::{Conversation, LLMKind, Message};
 
 /// Thread-safe wrapper around [`CaptureStore`] for use as Tauri state.
@@ -261,14 +262,67 @@ pub fn xkg_stats(
 /// Phase 3 deliverable: backs the Graph.svelte tab. Defaults to a
 /// 20-node / 40-edge graph which is plenty for the "circle of dots +
 /// lines" SVG visualization.
+///
+/// Wraps `CaptureStore::topic_graph_query` (the FTS5 topic-graph
+/// version). For the **conversation-link BFS** subgraph (TASK-167
+/// `graph_query` spec), see [`crate::graph`].
 #[tauri::command]
-pub fn graph_query(
+pub fn topic_graph_query(
     query: String,
     store: tauri::State<'_, Store>,
 ) -> Result<GraphQueryResult, String> {
     let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
-    let res: GraphResult<GraphQueryResult> = guard.graph_query(&query, 20, 40);
-    res.map_err(|e| format!("graph_query: {e}"))
+    let res: GraphResult<GraphQueryResult> = guard.topic_graph_query(&query, 20, 40);
+    res.map_err(|e| format!("topic_graph_query: {e}"))
+}
+
+/// Phase 167 deliverable: BFS over `conversation_links` starting from
+/// `root_id`. Returns the sub-graph (`SubGraph { nodes, edges }`)
+/// reachable within `depth` hops. Empty result when `root_id` is not
+/// in the store.
+#[tauri::command]
+pub fn graph_query(
+    root_id: String,
+    depth: Option<usize>,
+    store: tauri::State<'_, Store>,
+) -> Result<SubGraph, String> {
+    let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
+    guard
+        .graph_query(&root_id, depth.unwrap_or(2))
+        .map_err(|e| format!("graph_query: {e}"))
+}
+
+/// Phase 167 deliverable: compute TF-IDF cosine similarity between
+/// `conversation_id` and every other conversation; persist any pair
+/// whose score is >= `threshold`. Returns the linked conversations
+/// in descending score order. Idempotent — re-running is a no-op
+/// thanks to the UNIQUE(source, target, link_type) constraint.
+#[tauri::command]
+pub fn graph_link(
+    conversation_id: String,
+    top_k: Option<usize>,
+    threshold: Option<f64>,
+    store: tauri::State<'_, Store>,
+) -> Result<Vec<LinkedConv>, String> {
+    let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
+    guard
+        .graph_link(&conversation_id, top_k.unwrap_or(5), threshold.unwrap_or(0.7))
+        .map_err(|e| format!("graph_link: {e}"))
+}
+
+/// Phase 167 deliverable: remove a single typed link. Returns true if
+/// a row was deleted.
+#[tauri::command]
+pub fn graph_unlink(
+    source: String,
+    target: String,
+    link_type: String,
+    store: tauri::State<'_, Store>,
+) -> Result<bool, String> {
+    let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
+    guard
+        .graph_unlink(&source, &target, &link_type)
+        .map_err(|e| format!("graph_unlink: {e}"))
 }
 
 /// Build the deep-link URL for the "Continue in browser" action.

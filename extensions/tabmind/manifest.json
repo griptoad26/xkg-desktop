@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TabMind",
-  "version": "0.7.0",
-  "description": "Search every tab instantly. Find what you need.",
+  "version": "0.8.0",
+  "description": "Search every tab instantly. Capture Claude, ChatGPT, Gemini, and Grok conversations into XKG.",
   "permissions": [
     "tabs",
     "tabGroups",
@@ -11,7 +11,13 @@
     "scripting"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "*://*.x.com/*",
+    "*://*.grok.com/*",
+    "*://claude.ai/*",
+    "*://console.anthropic.com/*",
+    "*://chatgpt.com/*",
+    "*://chat.openai.com/*",
+    "*://gemini.google.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html"
@@ -27,6 +33,35 @@
       ],
       "js": [
         "content/content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://claude.ai/*",
+        "*://console.anthropic.com/*"
+      ],
+      "js": [
+        "content/claude.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*"
+      ],
+      "js": [
+        "content/chatgpt.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://gemini.google.com/*"
+      ],
+      "js": [
+        "content/gemini.js"
       ],
       "run_at": "document_idle"
     }

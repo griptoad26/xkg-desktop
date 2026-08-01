@@ -17,6 +17,7 @@
 // Pull the modules in. The binary also declares them, but each
 // compilation unit (lib vs bin) has its own `mod` namespace, so the
 // duplication is harmless.
+pub mod graph;
 pub mod shortcuts;
 pub mod sync_command;
 pub mod xkg;

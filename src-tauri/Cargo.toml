@@ -48,3 +48,13 @@ custom-protocol = ["tauri/custom-protocol"]
 tempfile = "3.10"
 # In-test mock HTTP transport for the sync round-trip test.
 httpmock = "0.7"
+
+# v0.8.0 bloat reduction (TASK-176): strip + LTO + panic=abort
+# brings AppImage from 77MB → ~25MB
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+incremental = false

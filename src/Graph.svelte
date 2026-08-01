@@ -358,3 +358,287 @@
     border-radius: 8px; font-size: 0.7rem; color: #cbd5e1;
   }
 </style>
+<!-- ====================================================================
+     PHASE 167 SIDEBAR — conversation-link subgraph (BFS over typed edges)
+     ====================================================================
+
+     Renders a small "circle of dots" SVG for the sub-graph returned by
+     `graph_query(root_id, depth)`. Each node is a dot; each edge is a
+     line. Clicking a node fires a new `graph_query` rooted at that
+     conversation, letting the user navigate the link graph 2 hops at
+     a time.
+
+     Buttons in the footer dispatch `graph_link` (compute TF-IDF cosine
+     similarity from a conversation) and `graph_unlink` (delete a
+     typed edge). Together with the existing topic-graph canvas above,
+     the user can both *discover* (FTS5 topic graph) and *navigate*
+     (link BFS) the same corpus from the same tab.
+     ==================================================================== -->
+<script>
+  import { invoke } from '@tauri-apps/api/core';
+
+  // --- Phase 167 linker state ---
+  let rootId = '';
+  let depth = 2;
+  let threshold = 0.7;
+  let topK = 5;
+  let subgraph = { nodes: [], edges: [] };
+  let linked = [];          // response from `graph_link`
+  let linkerBusy = false;
+  let linkerError = null;
+  let selectedEdge = null;  // { source, target, link_type } to unlink
+
+  async function runSubgraph() {
+    if (!rootId.trim()) return;
+    linkerBusy = true;
+    linkerError = null;
+    try {
+      const res = await invoke('graph_query', {
+        rootId: rootId.trim(),
+        depth: depth,
+      });
+      subgraph = res || { nodes: [], edges: [] };
+    } catch (e) {
+      linkerError = `graph_query: ${e}`;
+    } finally {
+      linkerBusy = false;
+    }
+  }
+
+  async function runLink() {
+    if (!rootId.trim()) return;
+    linkerBusy = true;
+    linkerError = null;
+    try {
+      const res = await invoke('graph_link', {
+        conversationId: rootId.trim(),
+        topK: topK,
+        threshold: threshold,
+      });
+      linked = res || [];
+      // Re-render the subgraph so newly-persisted edges show up.
+      await runSubgraph();
+    } catch (e) {
+      linkerError = `graph_link: ${e}`;
+    } finally {
+      linkerBusy = false;
+    }
+  }
+
+  async function unlinkEdge(edge) {
+    linkerBusy = true;
+    linkerError = null;
+    try {
+      await invoke('graph_unlink', {
+        source: edge.source,
+        target: edge.target,
+        linkType: edge.link_type,
+      });
+      selectedEdge = null;
+      await runSubgraph();
+    } catch (e) {
+      linkerError = `graph_unlink: ${e}`;
+    } finally {
+      linkerBusy = false;
+    }
+  }
+
+  // --- Layout: simple concentric circle ---
+  // Root at center, depth 1 ring, depth 2 outer ring. Edges are
+  // straight lines from source dot to target dot.
+  $: layout = (() => {
+    const W = 280, H = 280;
+    const cx = W / 2, cy = H / 2;
+    const r1 = 70, r2 = 120;
+    const byDepth = { 0: [], 1: [], 2: [] };
+    for (const n of subgraph.nodes) {
+      (byDepth[n.depth] || (byDepth[n.depth] = [])).push(n);
+    }
+    const positions = {};
+    for (const d of [0, 1, 2]) {
+      const arr = byDepth[d] || [];
+      const r = d === 0 ? 0 : (d === 1 ? r1 : r2);
+      arr.forEach((n, i) => {
+        if (d === 0) {
+          positions[n.conversation_id] = { x: cx, y: cy };
+        } else {
+          const theta = (2 * Math.PI * i) / arr.length;
+          positions[n.conversation_id] = {
+            x: cx + r * Math.cos(theta),
+            y: cy + r * Math.sin(theta),
+          };
+        }
+      });
+    }
+    return { W, H, cx, cy, positions };
+  })();
+</script>
+
+<div class="linker-sidebar">
+  <h3>Conversation links</h3>
+  <div class="linker-controls">
+    <label>
+      Conversation id
+      <input bind:value={rootId} placeholder="conv-… or any id" />
+    </label>
+    <label>
+      Depth <input type="number" bind:value={depth} min="1" max="5" />
+    </label>
+    <label>
+      Threshold
+      <input type="number" bind:value={threshold} min="0" max="1" step="0.05" />
+    </label>
+    <label>
+      Top-K <input type="number" bind:value={topK} min="1" max="20" />
+    </label>
+    <div class="linker-buttons">
+      <button on:click={runSubgraph} disabled={linkerBusy || !rootId.trim()}>
+        Query graph
+      </button>
+      <button on:click={runLink} disabled={linkerBusy || !rootId.trim()}>
+        Compute links
+      </button>
+    </div>
+    {#if linkerError}
+      <div class="linker-error">{linkerError}</div>
+    {/if}
+    {#if linked.length}
+      <div class="linker-summary">
+        Persisted {linked.length} related link{linked.length === 1 ? '' : 's'}
+        (top score {linked[0].score.toFixed(3)}).
+      </div>
+    {/if}
+  </div>
+
+  <svg viewBox="0 0 {layout.W} {layout.H}" class="linker-svg" aria-label="subgraph">
+    {#each subgraph.edges as e}
+      {#if layout.positions[e.source] && layout.positions[e.target]}
+        <line
+          x1={layout.positions[e.source].x}
+          y1={layout.positions[e.source].y}
+          x2={layout.positions[e.target].x}
+          y2={layout.positions[e.target].y}
+          stroke="#4b5563"
+          stroke-width="1"
+          class="linker-edge"
+          class:selected={selectedEdge && selectedEdge.source === e.source && selectedEdge.target === e.target}
+          on:click={() => (selectedEdge = e)}
+        />
+      {/if}
+    {/each}
+    {#each subgraph.nodes as n}
+      {#if layout.positions[n.conversation_id]}
+        <g
+          class="linker-node"
+          class:is-root={n.depth === 0}
+          on:click={() => (rootId = n.conversation_id)}
+        >
+          <circle
+            cx={layout.positions[n.conversation_id].x}
+            cy={layout.positions[n.conversation_id].y}
+            r={n.depth === 0 ? 8 : 5}
+            fill={n.depth === 0 ? '#f59e0b' : '#60a5fa'}
+          />
+          <text
+            x={layout.positions[n.conversation_id].x}
+            y={layout.positions[n.conversation_id].y + (n.depth === 0 ? 22 : 16)}
+            text-anchor="middle"
+            font-size="9"
+            fill="#cbd5e1"
+          >{n.conversation_id}</text>
+        </g>
+      {/if}
+    {/each}
+  </svg>
+
+  {#if selectedEdge}
+    <div class="linker-edge-actions">
+      <span>{selectedEdge.source} → {selectedEdge.target} ({selectedEdge.link_type})</span>
+      <button on:click={() => unlinkEdge(selectedEdge)} disabled={linkerBusy}>
+        Unlink
+      </button>
+      <button on:click={() => (selectedEdge = null)}>Cancel</button>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .linker-sidebar {
+    border-top: 1px solid #1f2937;
+    padding: 0.75rem 0.5rem 1.5rem;
+    margin-top: 1rem;
+  }
+  .linker-sidebar h3 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+    color: #e5e7eb;
+  }
+  .linker-controls {
+    display: flex; flex-direction: column; gap: 0.4rem;
+    margin-bottom: 0.75rem;
+  }
+  .linker-controls label {
+    display: flex; justify-content: space-between;
+    align-items: center; gap: 0.5rem;
+    font-size: 0.8rem; color: #94a3b8;
+  }
+  .linker-controls input {
+    flex: 1;
+    background: #1e1e2e; color: #e5e7eb;
+    border: 1px solid #2a2a4a; border-radius: 4px;
+    padding: 0.2rem 0.4rem;
+    font: inherit; font-size: 0.8rem;
+  }
+  .linker-buttons {
+    display: flex; gap: 0.4rem;
+  }
+  .linker-buttons button {
+    flex: 1;
+    background: #2a2a4a; color: #e5e7eb;
+    border: 1px solid #3a3a5a; border-radius: 4px;
+    padding: 0.35rem 0.6rem;
+    font: inherit; font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .linker-buttons button:hover:not(:disabled) {
+    background: #3a3a5a;
+  }
+  .linker-buttons button:disabled {
+    opacity: 0.5; cursor: not-allowed;
+  }
+  .linker-error {
+    color: #f87171; font-size: 0.8rem;
+  }
+  .linker-summary {
+    color: #34d399; font-size: 0.8rem;
+  }
+  .linker-svg {
+    width: 100%; height: auto; max-width: 320px;
+    background: #1e1e2e; border-radius: 6px;
+    display: block; margin: 0 auto;
+  }
+  .linker-edge {
+    cursor: pointer;
+  }
+  .linker-edge.selected {
+    stroke: #f59e0b; stroke-width: 2;
+  }
+  .linker-node {
+    cursor: pointer;
+  }
+  .linker-node:hover circle {
+    stroke: #fbbf24; stroke-width: 2;
+  }
+  .linker-edge-actions {
+    margin-top: 0.5rem;
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.8rem; color: #94a3b8;
+  }
+  .linker-edge-actions button {
+    background: #2a2a4a; color: #e5e7eb;
+    border: 1px solid #3a3a5a; border-radius: 4px;
+    padding: 0.2rem 0.5rem;
+    font: inherit; font-size: 0.8rem;
+    cursor: pointer;
+  }
+</style>
