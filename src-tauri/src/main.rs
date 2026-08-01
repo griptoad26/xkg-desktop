@@ -18,8 +18,9 @@ use tauri_plugin_autostart::ManagerExt;
 
 use sync_command::{local_encryption_key, sync_now};
 use xkg::{
-    capture_html, default_db_path, get_conversation_messages, graph_query, list_conversations,
-    open_store, search_messages, xkg_stats, Store, StorePath,
+    capture_html, continue_in_browser, default_db_path,
+    get_conversation_messages, graph_query, list_conversations, open_store, search_advanced,
+    search_messages, xkg_stats, Store, StorePath,
 };
 
 // AppState removed — we use shortcuts::ShortcutState2 for the
@@ -107,6 +108,9 @@ fn main() {
             // CLI args passed to the app on auto-launch. We don't need any.
             Some(vec![]),
         ))
+        // Shell plugin gives us `shell().open(url, None)` for the
+        // "Continue in browser" deep link (Phase 5a).
+        .plugin(tauri_plugin_shell::init())
         .manage(ShortcutState2::default())
         .invoke_handler(tauri::generate_handler![
             import_text,
@@ -116,9 +120,11 @@ fn main() {
             capture_html,
             list_conversations,
             search_messages,
+            search_advanced,
             get_conversation_messages,
             xkg_stats,
             graph_query,
+            continue_in_browser,
             sync_now,
             local_encryption_key,
         ])

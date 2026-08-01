@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use xkg_core::capture::CaptureStore;
+use xkg_core::capture::{CaptureStore, SearchFilters, SearchHit};
 use xkg_core::extractor::get_extractor;
 use xkg_core::extractors::chatgpt::extract_title;
 use xkg_core::graph::{GraphQueryResult, GraphResult};
@@ -203,6 +203,25 @@ pub fn search_messages(
         .map_err(|e| format!("search: {e}"))
 }
 
+/// Phase 5a: full-text search with LLM / date-range / has-code /
+/// has-citations filters. Returns [`SearchHit`] rows in bm25 rank order.
+///
+/// `filters` carries optional filter dimensions; missing fields mean
+/// "no restriction on this dimension". An empty / blank `query` returns
+/// an empty vector (same contract as [`search_messages`]).
+#[tauri::command]
+pub fn search_advanced(
+    query: String,
+    filters: SearchFilters,
+    limit: usize,
+    store: tauri::State<'_, Store>,
+) -> Result<Vec<SearchHit>, String> {
+    let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
+    guard
+        .search_advanced(&query, &filters, limit)
+        .map_err(|e| format!("search_advanced: {e}"))
+}
+
 /// List every message in a conversation, oldest first.
 #[tauri::command]
 pub fn get_conversation_messages(
@@ -250,6 +269,51 @@ pub fn graph_query(
     let guard = store.0.lock().map_err(|e| format!("store lock poisoned: {e}"))?;
     let res: GraphResult<GraphQueryResult> = guard.graph_query(&query, 20, 40);
     res.map_err(|e| format!("graph_query: {e}"))
+}
+
+/// Build the deep-link URL for the "Continue in browser" action.
+///
+/// `llm` is one of `"chatgpt"`, `"claude"`, or `"grok"`. `title` is the
+/// conversation's first user prompt, percent-encoded into the `?q=`
+/// query param so the LLM web UI pre-fills the prompt box.
+///
+/// Extracted as a free function so the unit tests in
+/// `tests/continue_in_browser.rs` can verify the URL templates without
+/// spinning up a full Tauri runtime.
+pub fn build_continue_url(llm: &str, title: &str) -> Result<String, String> {
+    let encoded = urlencoding::encode(title).into_owned();
+    let url = match llm {
+        "chatgpt" => format!("https://chatgpt.com/?q={}", encoded),
+        "claude" => format!("https://claude.ai/new?q={}", encoded),
+        "grok" => format!("https://grok.com/?q={}", encoded),
+        other => return Err(format!("unsupported LLM: {}", other)),
+    };
+    Ok(url)
+}
+
+/// Phase 5a: open the system browser on the matching LLM's new-chat
+/// page, with the conversation title pre-filled as the prompt.
+///
+/// `tauri_plugin_shell::ShellExt::shell(&app).open(url, None)` works
+/// on all three desktop targets (macOS, Linux, Windows) because it
+/// defers to the platform's "open" / "xdg-open" / "start" helper.
+#[tauri::command]
+pub async fn continue_in_browser(
+    llm: String,
+    title: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // `tauri_plugin_shell::ShellExt::shell(&app).open(url, None)` is
+    // the recommended pattern from the Phase 5a spec, even though the
+    // method is now marked deprecated in favor of `tauri-plugin-opener`
+    // (which is a 2.x-only split-out crate). The allow is scoped to
+    // the single call so the rest of the file stays warning-clean.
+    let url = build_continue_url(&llm, &title)?;
+    #[allow(deprecated)]
+    tauri_plugin_shell::ShellExt::shell(&app)
+        .open(url, None)
+        .map_err(|e| format!("failed to open browser: {e}"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -303,5 +367,39 @@ mod tests {
         let r = MessageRole::User;
         let j = serde_json::to_string(&r).unwrap();
         assert_eq!(j, "\"user\"");
+    }
+
+    #[test]
+    fn build_continue_url_chatgpt() {
+        let u = build_continue_url("chatgpt", "hello world").expect("url");
+        assert_eq!(u, "https://chatgpt.com/?q=hello%20world");
+    }
+
+    #[test]
+    fn build_continue_url_claude() {
+        let u = build_continue_url("claude", "what is rust?").expect("url");
+        assert_eq!(u, "https://claude.ai/new?q=what%20is%20rust%3F");
+    }
+
+    #[test]
+    fn build_continue_url_grok() {
+        let u = build_continue_url("grok", "rust & sqlite").expect("url");
+        assert_eq!(u, "https://grok.com/?q=rust%20%26%20sqlite");
+    }
+
+    #[test]
+    fn build_continue_url_unsupported_llm_errors() {
+        let err = build_continue_url("gemini", "hi").unwrap_err();
+        assert!(err.contains("unsupported LLM"));
+        assert!(err.contains("gemini"));
+    }
+
+    #[test]
+    fn build_continue_url_empty_title_is_ok() {
+        // An empty title should produce a valid URL with a bare `?q=`,
+        // not panic or 500. The browser will land on the LLM's new-chat
+        // page with an empty prompt box.
+        let u = build_continue_url("chatgpt", "").expect("url");
+        assert_eq!(u, "https://chatgpt.com/?q=");
     }
 }

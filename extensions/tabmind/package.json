@@ -1,0 +1,12 @@
+{
+  "name": "xkg-tab-search",
+  "version": "0.1.0",
+  "description": "Search all open tabs and sync to XKG",
+  "scripts": {
+    "build": "echo 'Extension ready for loading'",
+    "dev": "npm run build"
+  },
+  "keywords": ["chrome-extension", "tab-search", "xkg"],
+  "author": "",
+  "license": "MIT"
+}

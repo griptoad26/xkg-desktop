@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TabMind</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🔍 TabMind</h1>
+      <div class="status" id="status">
+        <span class="indexing hidden">Indexing...</span>
+        <span class="ready hidden">Ready</span>
+        <span class="tabs-count" id="tabsCount">0 tabs</span>
+      </div>
+    </header>
+
+    <!-- Quick-launch row: opens a fresh chat tab in each linked LLM -->
+    <nav class="quick-launch" id="quickLaunch" aria-label="Open new chat in LLM">
+      <!-- Buttons injected by popup.js so providers can come from settings -->
+    </nav>
+
+    <div class="search-box">
+      <input
+        type="text"
+        id="searchInput"
+        placeholder="Search tabs by content..."
+        autocomplete="off"
+        autofocus
+      >
+      <div class="shortcuts">
+        <kbd>↑↓</kbd> navigate
+        <kbd>Enter</kbd> jump
+        <kbd>Esc</kbd> close
+      </div>
+    </div>
+
+    <div class="results" id="results">
+      <div class="empty-state">
+        Start typing to search...
+      </div>
+    </div>
+
+    <footer>
+      <button id="wakeAll" class="btn-wake" title="Wake all suspended tabs">
+        ☀️ Wake
+      </button>
+      <button id="syncGrok" class="btn-grok" title="Sync Grok conversations">
+        🤖 Sync
+      </button>
+      <button id="groupTabs" class="btn-group" title="Group tabs">
+        📁 Group
+      </button>
+      <button id="settingsBtn" class="btn-settings" title="Settings">
+        ⚙️
+      </button>
+    </footer>
+  </div>
+
+  <!-- Settings Panel -->
+  <div class="settings-panel hidden" id="settingsPanel">
+    <h2>Settings</h2>
+    <div class="form-group">
+      <label>XKG API Endpoint</label>
+      <input type="text" id="xkgEndpoint" placeholder="http://localhost:5000">
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" id="autoSyncGrok">
+        Auto-sync Grok tabs
+      </label>
+    </div>
+    <div class="form-group">
+      <label>Quick-launch LLM shortcuts</label>
+      <div class="form-hint">Pick which providers appear in the header row. Order = left-to-right.</div>
+      <div id="llmPicker" class="llm-picker"></div>
+    </div>
+    <div class="form-actions">
+      <button id="saveSettings" class="btn-primary">Save</button>
+      <button id="closeSettings" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Group Panel -->
+  <div class="group-panel hidden" id="groupPanel">
+    <h2>📁 Tab Groups</h2>
+    <div class="group-actions">
+      <button id="groupByDomain" class="btn-small">🌐 By Domain</button>
+      <button id="groupGrok" class="btn-small">🤖 Grok Only</button>
+      <button id="groupX" class="btn-small">🐦 X/Twitter</button>
+    </div>
+    <div class="group-list" id="groupList">
+      <p class="hint">Click a button to group tabs</p>
+    </div>
+    <div class="form-actions">
+      <button id="closeGroup" class="btn-secondary">Close</button>
+    </div>
+  </div>
+
+  <script src="tab-groups.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
