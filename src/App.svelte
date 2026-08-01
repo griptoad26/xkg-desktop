@@ -3,8 +3,9 @@
   import Capture from './Capture.svelte';
   import Graph from './Graph.svelte';
   import Sync from './Sync.svelte';
+  import KgFilter from './lib/KgFilter.svelte';
 
-  let view = 'capture';   // 'capture' | 'graph' | 'sync' | 'settings'
+  let view = 'capture';   // 'capture' | 'graph' | 'kg' | 'sync' | 'settings'
 </script>
 
 <main>
@@ -19,6 +20,11 @@
       on:click={() => (view = 'graph')}
       data-testid="tab-graph"
     >🕸️ Graph</button>
+    <button
+      class:active={view === 'kg'}
+      on:click={() => (view = 'kg')}
+      data-testid="tab-kg"
+    >🔍 KG Filter</button>
     <button
       class:active={view === 'sync'}
       on:click={() => (view = 'sync')}
@@ -35,6 +41,8 @@
     <Capture />
   {:else if view === 'graph'}
     <Graph />
+  {:else if view === 'kg'}
+    <KgFilter />
   {:else if view === 'sync'}
     <Sync />
   {:else}

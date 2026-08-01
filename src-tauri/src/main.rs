@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod graph;
+mod peer_discovery;
 mod shortcuts;
 mod sync_command;
 mod xkg;
@@ -18,6 +19,7 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 
 use sync_command::{local_encryption_key, sync_now};
+use peer_discovery::discover_peers;
 use xkg::{
     capture_html, continue_in_browser, default_db_path, get_conversation_messages, graph_link,
     graph_query, graph_unlink, list_conversations, open_store, search_advanced, search_messages,
@@ -131,6 +133,7 @@ fn main() {
             continue_in_browser,
             sync_now,
             local_encryption_key,
+            discover_peers,
         ])
         .setup(|app| {
             // Register the system-wide shortcut (Ctrl+Shift+X by default).

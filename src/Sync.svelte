@@ -14,8 +14,16 @@
   let history = [];             // [{ ts, ok, summary, result?, error? }]
   const HISTORY_MAX = 10;
 
+  // --- Tailscale peer discovery state (Phase 178 / TASK-178) ---
+  let peers = [];               // [{ node_id, name, ip, ips, online, last_seen }]
+  let peersError = null;        // string | null
+  let peersFetchedAt = null;    // unix seconds | null
+  let discovering = false;
+
   // --- Lifecycle: hydrate the auth token with the placeholder
   // `local_encryption_key` value if the user hasn't typed anything yet.
+  // Also auto-run peer discovery once on mount so the user immediately
+  // sees available Tailscale peers (or an install hint).
   onMount(async () => {
     try {
       const k = await invoke('local_encryption_key');
@@ -24,7 +32,49 @@
       // Fall back silently — user can still type their own token.
       lastError = `local_encryption_key: ${e}`;
     }
+    // Don't await — let it run in background, the button shows state.
+    discoverPeers();
   });
+
+  async function discoverPeers() {
+    if (discovering) return;
+    discovering = true;
+    peersError = null;
+    try {
+      const res = await invoke('discover_peers');
+      // res shape: { peers, ok, error, fetched_at }
+      if (res && Array.isArray(res.peers)) {
+        peers = res.peers;
+      } else {
+        peers = [];
+      }
+      peersError = res?.error || null;
+      peersFetchedAt = res?.fetched_at || Math.floor(Date.now() / 1000);
+    } catch (e) {
+      peersError = `discover_peers: ${e}`;
+      peers = [];
+      peersFetchedAt = Math.floor(Date.now() / 1000);
+    } finally {
+      discovering = false;
+    }
+  }
+
+  // Use the peer IP as a hub URL. The sync client expects http(s)://host:port
+  // — Tailscale IPs are bare addresses, so we wrap them with http://.
+  // Port: prefer the current serverUrl's port if any, else 8090 (cluster-hub default).
+  function pickPeer(peer) {
+    if (!peer || !peer.ip) return;
+    let port = '8090';
+    try {
+      const u = new URL(serverUrl);
+      port = u.port || '8090';
+    } catch (_) {
+      port = '8090';
+    }
+    const protocol = serverUrl.startsWith('https') ? 'https' : 'http';
+    serverUrl = `${protocol}://${peer.ip}:${port}`;
+    peersError = `using ${peer.name} (${peer.ip}) — press Sync now to test`;
+  }
 
   function fmtAgo(secs) {
     if (!secs) return 'never';
@@ -177,6 +227,56 @@
     </p>
   </section>
 
+  <section class="peers" data-testid="sync-peers">
+    <div class="peers-head">
+      <h2>Tailscale peers</h2>
+      <button
+        class="secondary"
+        on:click={discoverPeers}
+        disabled={discovering}
+        data-testid="sync-discover-button"
+      >
+        {discovering ? 'Discovering…' : 'Discover'}
+      </button>
+    </div>
+
+    {#if peersError}
+      <p class="peers-hint" data-testid="sync-peers-error">
+        {peersError}
+        {#if peersError.includes('install')}
+          · <a href="https://tailscale.com/download" target="_blank" rel="noopener">install tailscale</a>
+        {/if}
+      </p>
+    {/if}
+
+    {#if peers.length === 0 && !peersError}
+      <p class="muted">No peers found yet. Click <strong>Discover</strong> or check that <code>tailscale status</code> works in a terminal.</p>
+    {:else if peers.length > 0}
+      <ul class="peers-list">
+        {#each peers as p (p.node_id || p.ip)}
+          <li class="peer-row" data-testid="sync-peer-row">
+            <button
+              type="button"
+              class="peer-pick"
+              on:click={() => pickPeer(p)}
+              data-testid="sync-peer-pick"
+              title="Use {p.name} ({p.ip}) as the hub URL"
+            >
+              <span class="peer-name">{p.name || p.node_id || p.ip}</span>
+              <span class="peer-ip"><code>{p.ip || '—'}</code></span>
+              <span class="peer-status peer-status-{p.online ? 'on' : 'off'}">
+                {p.online ? '● online' : '○ offline'}
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+      {#if peersFetchedAt}
+        <p class="peers-meta muted">discovered {fmtAgo(peersFetchedAt)}</p>
+      {/if}
+    {/if}
+  </section>
+
   <section class="history">
     <div class="history-head">
       <h2>History</h2>
@@ -297,6 +397,79 @@
   .status-ok .dot { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.6); }
   .status-err { background: rgba(239,68,68,0.12); color: #fca5a5; }
   .status-err .dot { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
+
+  /* Tailscale peers (Phase 178) */
+  .peers {
+    margin-top: 1.5rem;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+  }
+  .peers-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 0.6rem;
+  }
+  .peers h2 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: #e8e8f0;
+  }
+  .peers-hint {
+    font-size: 0.85rem;
+    color: #fbbf24;
+    margin: 0.4rem 0;
+  }
+  .peers-hint a {
+    color: #60a5fa;
+    text-decoration: underline;
+  }
+  .peers-list {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 0.4rem;
+  }
+  .peer-row { margin: 0; }
+  .peer-pick {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 0.6rem;
+    background: #0f0f1f;
+    color: #e8e8f0;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .peer-pick:hover {
+    border-color: #3b82f6;
+    background: #16213e;
+  }
+  .peer-name {
+    text-align: left;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .peer-ip code {
+    background: #1e1e2e;
+    color: #93c5fd;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+  }
+  .peer-status {
+    font-size: 0.75rem;
+    font-variant: small-caps;
+  }
+  .peer-status-on  { color: #22c55e; }
+  .peer-status-off { color: #94a3b8; }
+  .peers-meta {
+    margin: 0.5rem 0 0;
+    font-size: 0.75rem;
+  }
 
   /* History */
   .history { margin-top: 1.25rem; }
