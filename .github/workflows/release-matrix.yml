@@ -1,0 +1,170 @@
+# release-matrix.yml — DRAFT for TabMind CI
+# Task: TASK-HUB-20260731-149 — TabMind iOS/macOS CI runners
+# Source spec: griptoad 2026-07-31 (in cluster-hub task description)
+# Purpose: add macOS runner to the existing GH Actions matrix so iOS IPA
+#          and macOS DMG builds ship in the same cycle as deb/rpm/nsis/msi.
+#
+# Status: DRAFT — needs review by devops-agent + griptoad before apply.
+# Apply path: copy matrix + signing job into the TabMind repo at
+#             .github/workflows/release.yml (or wherever the current release
+#             workflow lives; the existing matrix keywords shown below are
+#             verbatim from the spec).
+#
+# ─── What this replaces / extends ─────────────────────────────────────────
+# Before:
+#   jobs:
+#     build:
+#       strategy:
+#         matrix:
+#           include:
+#             - os: ubuntu-22.04
+#               target: deb
+#             - os: windows-latest
+#               target: nsis
+#
+# After (see "matrix" job below): ubuntu-22.04/deb, macos-latest/dmg,
+# windows-latest/nsis. iOS IPA is a separate job ("ios-ipa") since it
+# needs Match for signing and a separate matrix entry crosses the OS
+# boundary awkwardly.
+# ─────────────────────────────────────────────────────────────────────────
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  # ─── 1. Desktop / Tauri matrix (deb, dmg, nsis) ─────────────────────────
+  matrix:
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: deb
+          - os: macos-latest    # ADD per griptoad 2026-07-31
+            target: dmg         # ADD per griptoad 2026-07-31
+          - os: windows-latest
+            target: nsis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.target }}
+        run: |
+          # Tauri build command — adjust to repo's actual build invocation.
+          cargo tauri build --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabmind-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe
+
+  # ─── 2. iOS IPA (secrets required, runs on macos-latest) ───────────────
+  ios-ipa:
+    name: build-ios-ipa
+    runs-on: macos-latest
+    needs: matrix                # iOS must ship in same cycle as desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      # Apple Developer Program enrollment is required ($99/year).
+      # Cert + provisioning profiles are stored as encrypted secrets and
+      # imported via Match (fastlane) — permanent identity, no rotating
+      # dev certs (per griptoad 2026-07-31).
+      - name: Import Match signing assets
+        env:
+          # Match passphrase + repo URL. Encrypted in repo settings.
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          # Apple Developer Team ID — 10-char alphanumeric, used as the
+          # gating value for CODE_SIGNING_REQUIRED / CODE_SIGN_IDENTITY.
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          bundle install
+          bundle exec fastlane match install
+
+      - name: Build IPA
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Match repo + passphrase carry through from the previous step
+          # via the keychain. Provisioning profile is selected by App ID.
+        run: |
+          xcodebuild -workspace TabMind.xcworkspace \
+                     -scheme TabMind \
+                     -configuration Release \
+                     -archivePath build/TabMind.xcarchive \
+                     -destination 'generic/platform=iOS' \
+                     CODE_SIGN_STYLE=Manual \
+                     CODE_SIGN_IDENTITY="Apple Distribution" \
+                     DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+                     archive
+
+          xcodebuild -exportArchive \
+                     -archivePath build/TabMind.xcarchive \
+                     -exportPath build/ipa \
+                     -exportOptionsPlist ExportOptions.plist
+
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabmind-ios-ipa
+          path: build/ipa/*.ipa
+
+  # ─── 3. Self-hosted fallback (manual trigger only) ─────────────────────
+  # Per griptoad 2026-07-31: if GitHub-hosted macos-latest is too slow
+  # or rate-limited, rent a Mac Mini on MacStadium / MacinCloud
+  # ($80-100/month dedicated), register it as a self-hosted runner
+  # with label `self-hosted,macOS,arm64`, and recreate the macOS
+  # entries above with `runs-on: [self-hosted, macOS, arm64]`.
+  # Order of preference:
+  #   1. macos-latest (GH-hosted, M1)  ← current default
+  #   2. macos-14      (GH-hosted, M1, explicit pin)
+  #   3. self-hosted macOS runner     ← only when 1+2 are too slow
+  #   4. Codemagic / Fastlane CI      ← only for Flutter mobile builds
+  self-hosted-mac-fallback:
+    name: build-dmg-self-hosted
+    runs-on: [self-hosted, macOS, arm64]
+    if: ${{ github.event.inputs.use_self_hosted == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo tauri build --target dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tabmind-dmg-self-hosted
+          path: target/release/bundle/dmg/*.dmg
+
+# ─── Secrets pattern (apply in repo Settings → Secrets → Actions) ─────────
+# Required to enable iOS-ipa job:
+#   MATCH_PASSWORD             — passphrase for the Match git repo
+#   MATCH_GIT_BASIC_AUTHORIZATION — base64 user:token for Match repo
+#   APPLE_TEAM_ID              — 10-char Apple Developer Team ID
+#   (Optional) APPSTORE_CONNECT_API_KEY — for TestFlight upload
+#
+# Rotation policy (must be documented in CI docs as part of this task):
+#   - Signing identity is permanent: Team ID + Distribution cert are
+#     provisioned once via Apple Developer Program, stored in Match.
+#   - Provisioning profiles are regenerated by Match on cert expiry
+#     (1-year cycle for Distribution). No ad-hoc dev cert rotations.
+#   - Match passphrase rotation: 90-day cadence, only when DEV needed.
+#   - TOKEN-level secrets (GH_TOKEN, APPSTORE_CONNECT_API_KEY): rotated
+#     on role change, never on calendar schedule.
+#
+# Open questions for griptoad before apply:
+#   1. What is the existing release workflow filename in the TabMind repo?
+#      (replace "release.yml" above with the real path)
+#   2. Is the desktop Tauri bundle wired (deb/dmg/nsis) already, or do
+#      we need to add the build step too?
+#   3. Is the iOS workspace/scheme named `TabMind.xcworkspace /
+#      TabMind`? Replace if not.
+#   4. Match repo — does it already exist, or do we need to bootstrap
+#      one (bundle exec fastlane match init)?
+#   5. Are we on Apple Developer Program or Enterprise? Program is
+#      assumed (per spec) since release IPA needs App Store distribution.
