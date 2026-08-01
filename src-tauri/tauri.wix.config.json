@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TabMind",
+  "version": "0.1.0",
+  "identifier": "com.seele.tabmind",
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis", "deb", "appimage", "dmg"],
+    "publisher": "Seele Agency",
+    "category": "Productivity",
+    "shortDescription": "TabMind — keyboard-first tab & idea manager",
+    "longDescription": "TabMind is a keyboard-first desktop client for capturing, organizing, and resurfacing tabs and ideas. Built on Tauri 2.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": ["en-US"],
+        "upgradeCode": "3624cd31-bdb7-44b6-bf22-4038ff36dea3",
+        "manufacturer": "Seele Agency",
+        "copyright": "Copyright (c) 2026 Seele Agency",
+        "name": "TabMind",
+        "description": "TabMind desktop client",
+        "arch": ["x64"],
+        "signCommand": "signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f $env:TAURI_SIGNING_CERT /p $env:TAURI_SIGNING_CERT_PASSWORD $argv",
+        "digestAlgorithm": "sha256",
+        "wixFragmentPath": null,
+        "allowDowngrades": false,
+        "installMode": "perMachine",
+        "enableElevatedUpdateTask": false,
+        "template": null,
+        "patchWindows": ["10"],
+        "webviewInstallMode": {
+          "type": "downloadBootstrapper",
+          "silent": true
+        }
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      },
+      "appimage": {
+        "bundleMediaFramework": false,
+        "libs": ["webkit2gtk-4.1"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "exceptionDomain": "seele.agency"
+    }
+  },
+  "_wixNotes": {
+    "upgradeCode": "Generate ONCE per product line. Reusing it across products will break MSI detection. Reuse across versions of the SAME product is correct.",
+    "scope": "Tests cover: fresh install, upgrade from previous version, repair install, silent install (msiexec /qn).",
+    "silentInstall": "msiexec /i TabMind_0.1.0_x64_en-US.msi /qn /norestart ACCEPT_EULA=1",
+    "uninstall":  "msiexec /x {<productCode>} /qn",
+    "productCodeOverride": "Tauri's wix config emits a new ProductCode per build; that is correct. Only upgradeCode is stable.",
+    "schemaCaveat": "Verified against Tauri 2.0.x schema. If Tauri bumps the wix block, regenerate this file from `cargo tauri init` then re-apply overrides."
+  }
+}

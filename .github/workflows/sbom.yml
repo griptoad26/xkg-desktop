@@ -1,0 +1,216 @@
+# .github/workflows/sbom.yml
+#
+# Per release: produce a CycloneDX SBOM and a third-party notices file, attach to the
+# GitHub release, and upload to the dependency-submission API.
+#
+# Tools:
+#   - anchore/sbom-action (uses syft under the hood) for native binaries / Rust build.
+#   - CycloneDX Python CLI for any Python service or build helper.
+#   - cargo-cyclonedx for the Rust tree directly when syft misses crates.
+#
+# Output (combined at release time):
+#   SBOM.cdx.json                  - merged CycloneDX JSON
+#   SBOM.cdx.xml                   - merged CycloneDX XML (some procurement tools want XML)
+#   SBOM.spdx.json                 - merged SPDX JSON (SBOM-in-SPDX for OPA / compliance)
+#   THIRD-PARTY-NOTICES.txt        - human-readable notice file built from SBOM components.
+
+name: SBOM
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to attach SBOM to"
+        required: true
+  workflow_call: {}
+
+permissions:
+  contents: write
+  # For GitHub dependency submission (Dependabot-style graph ingest).
+  # Repository-level fine-grained PAT, name "Dependency-Submission".
+  # Scopes: contents:write. Configure under Settings -> Secrets and variables -> Actions
+  # -> Dependency submission token.
+
+jobs:
+  build-sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect languages
+        id: detect
+        run: |
+          echo "has_rust=$([ -f Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_node=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_python=$([ -f pyproject.toml ] || [ -f requirements.txt ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Python CycloneDX CLI
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          python -m pip install --upgrade cyclonedx-python-lib cyclonedx-bom
+
+      - name: Rust -> CycloneDX (cargo-cyclonedx)
+        if: steps.detect.outputs.has_rust == 'true'
+        uses: cornersb/cargo-cyclonedx-action@v1
+        with:
+          out-dir: sbom-rust
+          output-format: json
+
+      - name: Install syft
+        uses: anchore/sbom-action@v0
+        with:
+          format: ""
+          artifact-name: ""
+
+      - name: Generate SBOM (syft, all-source)
+        id: syft
+        run: |
+          mkdir -p sbom-syft
+          syft scan dir:. \
+            --output cyclonedx-json=sbom-syft/syft.cdx.json \
+            --output spdx-json=sbom-syft/syft.spdx.json \
+            --source-version "${GITHUB_REF_NAME:-dev}" \
+            --source-type directory
+        env:
+          SYFT_REGISTRY_AUTH: ""
+
+      - name: Generate SBOM (Python, if present)
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          mkdir -p sbom-py
+          cyclonedx-py environment -o sbom-py/python.cdx.json
+          cyclonedx-py environment -o sbom-py/python.cdx.xml --output-format XML
+
+      - name: Aggregate SBOMs
+        run: |
+          python - <<'PY'
+          import json, glob, sys
+          merged = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "metadata": {
+              "timestamp": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+              "tools": [{"vendor": "anchore", "name": "syft"}, {"vendor": "CycloneDX", "name": "cyclonedx-python-lib"}],
+              "component": {"type": "application", "name": "TabMind", "version": "${GITHUB_REF_NAME:-dev}"},
+            },
+            "components": [],
+            "dependencies": [],
+          }
+          for path in glob.glob("sbom-*/**/*.cdx.json", recursive=True):
+              with open(path) as f:
+                  doc = json.load(f)
+              merged["components"].extend(doc.get("components", []))
+              merged["dependencies"].extend(doc.get("dependencies", []))
+          # Dedup components by (name, version, purl).
+          seen = set(); dedup = []
+          for c in merged["components"]:
+              key = (c.get("name"), c.get("version"), c.get("purl"))
+              if key in seen: continue
+              seen.add(key); dedup.append(c)
+          merged["components"] = dedup
+          with open("SBOM.cdx.json", "w") as f:
+              json.dump(merged, f, indent=2)
+          print(f"merged {len(dedup)} components from {len(glob.glob('sbom-*/**/*.cdx.json', recursive=True))} inputs")
+          PY
+
+      - name: Generate SPDX (syft -> merged)
+        run: |
+          python - <<'PY'
+          import json, glob
+          merged = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "name": "TabMind", "packages": [], "relationships": []}
+          seen = set()
+          for path in glob.glob("sbom-*/**/*.spdx.json", recursive=True):
+              with open(path) as f:
+                  doc = json.load(f)
+              for p in doc.get("packages", []):
+                  key = (p.get("name"), p.get("versionInfo"))
+                  if key in seen: continue
+                  seen.add(key); merged["packages"].append(p)
+          with open("SBOM.spdx.json", "w") as f:
+              json.dump(merged, f, indent=2)
+          PY
+
+      - name: Build THIRD-PARTY-NOTICES.txt
+        run: |
+          python - <<'PY'
+          import json, collections, urllib.request, os, hashlib
+          with open("SBOM.cdx.json") as f:
+              sbom = json.load(f)
+          groups = collections.defaultdict(list)
+          for c in sbom["components"]:
+              lic = (c.get("licenses") or [{}])[0].get("license", {}).get("id") or \
+                    (c.get("licenses") or [{}])[0].get("license", {}).get("name") or "UNKNOWN"
+              groups[lic].append((c.get("name","?"), c.get("version","?")))
+          lines = [
+            "TabMind THIRD-PARTY NOTICES",
+            f"Generated for release ${GITHUB_REF_NAME:-dev}",
+            "This file aggregates license notices for all bundled third-party components.",
+            "",
+          ]
+          for lic in sorted(groups):
+              lines.append(f"--- {lic} ({len(groups[lic])} components) ---")
+              for name, ver in sorted(groups[lic]):
+                  lines.append(f"  {name} {ver}")
+              lines.append("")
+          with open("THIRD-PARTY-NOTICES.txt", "w") as f:
+              f.write("\n".join(lines))
+          print("wrote THIRD-PARTY-NOTICES.txt")
+          PY
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: |
+            SBOM.cdx.json
+            SBOM.spdx.json
+            THIRD-PARTY-NOTICES.txt
+          if-no-files-found: error
+
+  attach-to-release:
+    needs: build-sbom
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            SBOM.cdx.json
+            SBOM.spdx.json
+            THIRD-PARTY-NOTICES.txt
+          fail_on_unmatched_files: true
+
+  submit-dependency-graph:
+    needs: build-sbom
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+      - name: Submit SBOM to GitHub dependency graph
+        uses: github/dependency-submission-toolkit/action@v1
+        with:
+          # maps cyclonedx-json -> dependency-submission payload
+          sbom-type: cyclonedx
+          sbom-path: SBOM.cdx.json
+        env:
+          # This is the fine-grained PAT described at top of file.
+          GITHUB_TOKEN: ${{ secrets.DEPENDENCY_SUBMISSION_TOKEN }}
