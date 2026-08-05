@@ -27,7 +27,7 @@ fn end_to_end_capture_then_search_then_list() {
     let title = extract_title(DOM);
     let now = chrono::Utc::now();
     let mut conv = Conversation::new(LLMKind::Chatgpt, title.clone());
-    conv.id = Some(extracted[0].client_msg_id.clone());
+    conv.id = Some(extracted[0].client_msg_id.clone().expect("conv has client_msg_id"));
     conv.created_at = now;
     conv.updated_at = now;
 
@@ -42,7 +42,7 @@ fn end_to_end_capture_then_search_then_list() {
         for m in &extracted {
             let mut msg = Message::new(m.role.clone(), m.body.clone());
             msg.conversation_id = Some(conv_id.clone());
-            msg.client_msg_id = Some(m.client_msg_id.clone());
+            msg.client_msg_id = Some(m.client_msg_id.clone().expect("msg has client_msg_id"));
             msg.created_at = now;
             g.insert_message(&msg).expect("insert msg");
         }
@@ -83,7 +83,7 @@ fn end_to_end_capture_then_search_then_list() {
         for m in &extracted {
             let mut msg = Message::new(m.role.clone(), m.body.clone());
             msg.conversation_id = Some(conv_id.clone());
-            msg.client_msg_id = Some(m.client_msg_id.clone());
+            msg.client_msg_id = Some(m.client_msg_id.clone().expect("idempotent msg"));
             g.insert_message(&msg).expect("idempotent insert");
         }
         assert_eq!(g.message_count().expect("count"), extracted.len() as i64);
