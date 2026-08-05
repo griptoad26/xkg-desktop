@@ -24,7 +24,7 @@
 
 use serde::Serialize;
 use hkdf::Hkdf;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use xkg_core::capture::CaptureStore;
 use xkg_core::sync::{Device, SyncClient, SyncError};
 use xkg_core::sync_http::{SyncHttpClient, UploadResult};
@@ -82,6 +82,12 @@ pub const KEYRING_SERVICE: &str = "xkg-desktop";
 /// User/account name within the keyring. Distinct from any OS
 /// account name; this is just the keychain account slot.
 pub const KEYRING_USER: &str = "device_key";
+/// Distinct keyring slot for the user-entered sync passphrase
+/// (TASK-203 / CS-X1). When this slot is populated, the on-the-wire
+/// AES key is derived from the passphrase via HKDF-SHA256 instead
+/// of from the random per-install key — so two devices typing the
+/// same passphrase produce the same 32-byte AES key.
+pub const KEYRING_USER_PASSPHRASE: &str = "sync_passphrase";
 
 /// Look up (or mint) the 32-byte device encryption key in the OS
 /// keyring.
@@ -101,11 +107,41 @@ pub const KEYRING_USER: &str = "device_key";
 /// CS-X3 flagged: the per-install entropy now lives in the OS
 /// secure store instead of in a directory path.
 ///
-/// The `store_path` parameter is kept for ABI compatibility with
-/// `tauri::command` callers, but is no longer used.
-pub fn device_key_from_keyring() -> Result<[u8; 32], String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|e| format!("keyring entry: {e}"))?;
+/// `entry` lets tests inject a custom keyring entry (e.g. one
+/// built via `Entry::new_with_credential` so the mock backend
+/// shares state across `set_password` / `get_password` calls).
+/// Production code passes `None` and we fall back to the default
+/// `Entry::new(KEYRING_SERVICE, KEYRING_USER)` constructor.
+///
+/// When a caller-supplied entry is used, the same `Entry` is
+/// reused across calls (we don't clone it). That matters for the
+/// `keyring::mock` test backend, which stores the password on the
+/// `MockCredential` instance — cloning via `Entry::new` would
+/// allocate a fresh credential with no password. The real OS
+/// keyring is unaffected because the OS resolves
+/// `(KEYRING_SERVICE, KEYRING_USER)` to the same stored entry
+/// regardless of how many `Entry` handles exist.
+pub fn device_key_from_keyring(
+    entry: Option<&keyring::Entry>,
+) -> Result<[u8; 32], String> {
+    // We need an owned `Entry` for the `set_password` fallback
+    // path, but we never clone the supplied entry — we use the
+    // reference's underlying handle via `as_any` round-tripping
+    // through the `Entry` itself. Concretely: the caller-supplied
+    // entry is held by reference for the lifetime of this call,
+    // and we use that same entry for both `get_password` and
+    // `set_password`.
+    match entry {
+        Some(e) => read_or_mint_key(e),
+        None => {
+            let default_entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+                .map_err(|e| format!("keyring entry: {e}"))?;
+            read_or_mint_key(&default_entry)
+        }
+    }
+}
+
+fn read_or_mint_key(entry: &keyring::Entry) -> Result<[u8; 32], String> {
     match entry.get_password() {
         Ok(hex_str) => {
             let bytes = hex::decode(hex_str.trim())
@@ -145,9 +181,12 @@ fn getrandom_bytes(buf: &mut [u8]) -> Result<(), String> {
 /// Compute a placeholder local "auth token" backed by the OS keyring.
 /// Used when the user hasn't entered an explicit token.
 ///
-/// On first run this mints a fresh 32-byte random key, stores it in
-/// the OS keyring, and returns the hex of that key. On subsequent
-/// runs the same key is read out of the keyring and returned.
+/// **TASK-203 / CS-X1**: when the user has set a sync passphrase
+/// via [`set_sync_passphrase`], the passphrase is returned as the
+/// token. When two devices share the same passphrase they then
+/// derive the same 32-byte AES key via HKDF-SHA256 (see
+/// [`derive_key`]) and their ciphertexts round-trip. Without a
+/// passphrase we fall back to the per-install random key (CS-X3).
 ///
 /// The returned token is opaque from the UI's perspective — it's
 /// only fed back into [`sync_now`] where [`derive_key`] turns it
@@ -159,8 +198,92 @@ fn getrandom_bytes(buf: &mut [u8]) -> Result<(), String> {
 pub fn local_encryption_key(
     _store_path: tauri::State<'_, StorePath>,
 ) -> Result<String, String> {
-    let key = device_key_from_keyring()?;
+    // Passphrase takes precedence — that's what enables cross-device
+    // sync. The keyring entry is created by set_sync_passphrase and
+    // has lifetime == user's intent to keep syncing.
+    if let Some(passphrase) = read_passphrase_from_keyring()? {
+        return Ok(passphrase);
+    }
+    // Fall back to the per-install random key. The UI cannot tell
+    // these apart (both are opaque hex-looking strings), which is
+    // intentional — callers always feed the token back into
+    // derive_key, which is the single source of truth for the
+    // AES key derivation.
+    let key = device_key_from_keyring(None)?;
     Ok(format!("keyring-{}", hex::encode(key)))
+}
+
+/// Read the user-set sync passphrase from the keyring, if present.
+///
+/// Returns `Ok(None)` when no passphrase has been configured yet —
+/// treat that as "fall back to the random per-install key" rather
+/// than as an error.
+///
+/// Accepts an optional pre-built [`keyring::Entry`]. When `None`,
+/// a fresh entry is constructed via [`keyring::Entry::new`] (the
+/// production path). Tests pass an entry built via
+/// [`keyring::Entry::new_with_credential`] wrapping a
+/// [`keyring::mock::MockCredential`] so they share state across
+/// reads and writes — see `tests/hkdf_test.rs` for the rationale.
+pub fn read_passphrase_from_keyring_with(
+    entry: &keyring::Entry,
+) -> Result<Option<String>, String> {
+    match entry.get_password() {
+        Ok(passphrase) => Ok(Some(passphrase)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("read passphrase: {e}")),
+    }
+}
+
+pub fn read_passphrase_from_keyring() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_PASSPHRASE)
+        .map_err(|e| format!("keyring entry (passphrase): {e}"))?;
+    read_passphrase_from_keyring_with(&entry)
+}
+
+/// Store (or overwrite) the user-set sync passphrase in the
+/// keyring. From this point on, [`local_encryption_key`] will
+/// return the passphrase as the token, and a subsequent
+/// [`derive_key`] call will produce the same 32-byte AES key on
+/// every device that has the same passphrase configured.
+///
+/// Pass the empty string to clear the passphrase (the keyring
+/// entry is deleted and `local_encryption_key` falls back to the
+/// per-install random key).
+///
+/// Splits into a helper that takes a `&keyring::Entry` so tests
+/// can inject a `MockCredential` (see
+/// [`read_passphrase_from_keyring_with`] for the same pattern).
+pub fn set_sync_passphrase_with(
+    entry: &keyring::Entry,
+    passphrase: String,
+) -> Result<(), String> {
+    if passphrase.is_empty() {
+        match entry.delete_password() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("clear passphrase: {e}")),
+        }
+    } else {
+        entry
+            .set_password(&passphrase)
+            .map_err(|e| format!("store passphrase: {e}"))
+    }
+}
+
+#[tauri::command]
+pub fn set_sync_passphrase(passphrase: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_PASSPHRASE)
+        .map_err(|e| format!("keyring entry (passphrase): {e}"))?;
+    set_sync_passphrase_with(&entry, passphrase)
+}
+
+/// Tauri command: returns whether a sync passphrase is currently
+/// configured. Used by the Sync tab to decide whether to show
+/// "Set passphrase" or "Change passphrase" in the UI.
+#[tauri::command]
+pub fn has_sync_passphrase() -> Result<bool, String> {
+    Ok(read_passphrase_from_keyring()?.is_some())
 }
 
 /// Run a single sync: register device → bundle everything since 0 → upload.
@@ -276,6 +399,79 @@ mod tests {
         assert_ne!(a, c);
     }
 
+    /// Cross-stack test vector for TASK-203 CS-X1.
+    ///
+    /// Pin the canonical HKDF-SHA256 output for a known passphrase
+    /// so the desktop (Rust) and mobile (Dart) sides produce the
+    /// exact same 32-byte AES key. The expected bytes here MUST
+    /// match the assertion in:
+    ///
+    ///   * `xkg-mobile-flutter/test/sync_crypto_hkdf_test.dart`
+    ///     (the canonical-vector test, asserting the same 32 bytes
+    ///     for the same passphrase)
+    ///   * `xkg-mobile-flutter/test/sync_service_passphrase_test.dart`
+    ///     (the SyncService-level test that asserts the same hex
+    ///     string after `setPassphrase`)
+    ///
+    /// If this test fails after a refactor, the mobile tests will
+    /// fail too — and vice versa. The contract is the 32-byte hex
+    /// string, not the implementation.
+    ///
+    /// Reference: HKDF-SHA256(
+    ///     salt = "xkg-v1",
+    ///     info = "sync-encryption-v1",
+    ///     IKM  = "correct horse battery staple",
+    ///     L    = 32
+    /// )
+    ///   = b93054311eba70a781cbebd08961d6841e540a95199936415febd727fb1989a5
+    ///
+    /// Verified independently with the `cryptography` Python library
+    /// (PyCA) which uses the same RFC 5869 reference implementation
+    /// as the Dart `cryptography` package and the Rust `hkdf` crate.
+    #[test]
+    fn derive_key_matches_mobile_cross_stack_vector() {
+        const PASSPHRASE: &str = "correct horse battery staple";
+        const EXPECTED_HEX: &str =
+            "b93054311eba70a781cbebd08961d6841e540a95199936415febd727fb1989a5";
+
+        let key = derive_key(PASSPHRASE);
+        let actual_hex = hex::encode(key);
+        assert_eq!(
+            actual_hex, EXPECTED_HEX,
+            "Rust HKDF-SHA256 output drifted from the cross-platform \
+             contract. The mobile side's SyncCrypto.hkdfKey() still \
+             produces {EXPECTED_HEX:?} for this passphrase — if this \
+             test fails, sync envelopes between mobile and desktop \
+             will no longer round-trip. DO NOT change the EXPECTED_HEX \
+             constant here without coordinating the same change in \
+             xkg-mobile-flutter/test/sync_crypto_hkdf_test.dart."
+        );
+    }
+
+    /// Edge case: empty passphrase is gated by `set_sync_passphrase`
+    /// (which clears the keyring entry), but `derive_key("")` itself
+    /// must still produce a deterministic 32-byte output. Locking
+    /// this in keeps the KDF behaviour stable across releases.
+    #[test]
+    fn derive_key_empty_passphrase_is_stable_32_bytes() {
+        let a = derive_key("");
+        let b = derive_key("");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 32);
+        // And it must differ from any non-empty passphrase.
+        assert_ne!(a, derive_key("x"));
+    }
+
+    /// Defence-in-depth: `derive_key` must always produce exactly
+    /// 32 bytes (AES-256 key length). The `expand` call would never
+    /// accept a different length, but a future refactor that does
+    /// (e.g. shifting to a different output length) would silently
+    /// break every envelope — this test catches that.
+    #[test]
+    fn derive_key_output_length_is_32_bytes() {
+        assert_eq!(derive_key("anything").len(), 32);
+    }
+
     #[test]
     fn sync_result_serializes_expected_fields() {
         let upload = UploadResult {
@@ -284,13 +480,16 @@ mod tests {
             msg_cursor: 20,
             accepted_at: 12345,
             bytes: 256,
+            accepted: 0,
+            messages_uploaded: 0,
+            cursor: 0,
         };
         let env = SyncEnvelope {
             device_id: "dev-1".into(),
-            conv_cursor: Some(0),
-            msg_cursor: Some(0),
-            encrypted_payload: vec![0u8; 256],
-            nonce: [0u8; 12],
+            encrypted_payload: "AAAA".into(),
+            nonce: "AAAAAAAAAAAAAAAA".into(),
+            cursor: 0,
+            message_cursor: 0,
         };
         let r = SyncResult {
             device_id: upload.device_id.clone(),
@@ -309,7 +508,7 @@ mod tests {
         assert!(j.contains("\"accepted_at\":12345"));
         assert!(j.contains("\"bytes\":256"));
         // Convince the compiler we used `env` so the test isn't dead.
-        assert_eq!(env.encrypted_payload.len(), 256);
+        assert_eq!(env.encrypted_payload.len(), 4);
     }
 
     #[test]

@@ -30,8 +30,13 @@ hkdf = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process"] }
 chrono = "0.4"
+# TASK-203 (H-D1): the project layout puts xkg-core under
+# $HOME/.openclaw/workspace/xkg-core, not as a sibling of xkg-desktop.
+# Hard-coding the absolute path here is fine for this monorepo; the
+# alternative (publishing xkg-core to crates.io or a private registry)
+# is more work than this milestone warrants.
 xkg-core = { path = "/home/x2/.openclaw/workspace/xkg-core" }
 url = "2.5"
 # Phase 5a: URL-encode conversation titles for the "Continue in browser"

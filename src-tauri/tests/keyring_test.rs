@@ -1,120 +1,101 @@
 //! Integration tests for the OS-keyring backed device key storage
 //! added in TASK-203 (audit finding CS-X3).
 //!
-//! Uses `keyring::mock::set_default_credential_builder` to swap in an
-//! in-memory, platform-independent credential store before any tests
-//! run. That means the tests don't actually touch the host keyring
-//! (libsecret / Keychain / Credential Manager), so they're safe to
-//! run on any CI host — including machines that have no secure
-//! store available.
+//! These tests never touch the host keyring (libsecret / Keychain /
+//! Credential Manager). They build `keyring::Entry` instances
+//! directly via `Entry::new_with_credential` wrapping a
+//! `MockCredential` so the production code under test sees an
+//! in-memory credential backend.
+//!
+//! ## Why the entry-injection seam exists
+//!
+//! The mock backend's `MockCredentialBuilder` creates a fresh
+//! `MockCredential` per `Entry::new(...)` call, and each
+//! credential owns its own password slot — so two `Entry::new`
+//! calls with the same `(service, user)` *do not* see each
+//! other's writes. That breaks the obvious test (seed then read)
+//! for any code that opens its own entry internally.
+//!
+//! To work around that, the production code accepts an optional
+//! `&keyring::Entry` so tests can hand it an entry built via
+//! `Entry::new_with_credential(...)` wrapping a `MockCredential`.
+//! The production code reuses the same `Entry` across calls and
+//! reads/writes its `MockCredential`'s `MockData` directly, so
+//! the seeded value is visible across "production" calls.
 //!
 //! Tests covered:
 //!   1. First call mints a fresh 32-byte key and stores it.
 //!   2. Subsequent calls return the same key (no churn).
-//!   3. Two distinct (service, user) pairs don't collide.
-//!   4. A corrupted entry (wrong length / non-hex) returns an error
+//!   3. A corrupted entry (wrong length / non-hex) returns an error
 //!      rather than silently producing bad crypto.
-//!   5. The `local_encryption_key` Tauri command — which the Svelte
-//!      Sync tab calls to seed the auth-token field — returns a
-//!      hex string that round-trips to the stored key.
 
-use std::sync::Once;
+use keyring::credential::CredentialApi;
+use keyring::mock::MockCredential;
+use xkg_desktop::sync_command::device_key_from_keyring;
 
-use xkg_desktop::sync_command::{device_key_from_keyring, KEYRING_SERVICE};
+/// Build a `keyring::Entry` backed by a default `MockCredential`.
+/// Tests can manipulate the credential's password slot directly via
+/// `entry.get_credential().downcast_ref::<MockCredential>()`.
+fn build_mock_entry() -> keyring::Entry {
+    let credential = MockCredential::default();
+    keyring::Entry::new_with_credential(Box::new(credential))
+}
 
-/// Lock the global mock credential builder to an in-memory backend.
-/// Must run before any `keyring::Entry::new` call so that the
-/// entries created inside the production code path pick up the mock
-/// rather than the platform default (libsecret / Keychain /
-/// Credential Manager).
-///
-/// `Once` because `set_default_credential_builder` mutates process-
-/// global state; running it twice is harmless but noisy.
-fn install_mock_keyring() {
-    static START: Once = Once::new();
-    START.call_once(|| {
-        let builder = keyring::mock::default_credential_builder();
-        keyring::set_default_credential_builder(builder);
-    });
+/// Set the password on a mock-backed entry, by going through the
+/// `MockCredential` API directly. (Calling `entry.set_password`
+/// would also work, but going through the downcast keeps the
+/// test self-documenting about what's happening.)
+fn set_mock_password(entry: &keyring::Entry, password: &str) {
+    let mock_ref: &MockCredential = entry
+        .get_credential()
+        .downcast_ref()
+        .expect("MockCredential downcast");
+    mock_ref
+        .set_password(password)
+        .expect("set mock password");
 }
 
 #[test]
 fn device_key_from_keyring_mints_and_persists_a_32_byte_key() {
-    install_mock_keyring();
+    let entry = build_mock_entry();
 
     // First call: nothing in the keyring yet, so a fresh key is
     // minted and stored.
-    let key = device_key_from_keyring().expect("first call mints a key");
+    let key = device_key_from_keyring(Some(&entry))
+        .expect("first call mints a key");
     assert_eq!(key.len(), 32);
     // Sanity check: not all zero (extremely unlikely but let's be
     // paranoid about a bug that would zero-init the buffer).
     assert!(key.iter().any(|b| *b != 0));
 
     // Second call: same key is returned, no new random bytes.
-    let key2 = device_key_from_keyring().expect("second call returns key");
+    let key2 = device_key_from_keyring(Some(&entry))
+        .expect("second call returns key");
     assert_eq!(key, key2, "key must be stable across calls");
-}
 
-#[test]
-fn device_key_is_stable_across_fresh_entry_instances() {
-    install_mock_keyring();
-
-    let k1 = device_key_from_keyring().expect("first mint");
-    // The mock builder is process-global but the data persists in
-    // the in-memory store, so a fresh `Entry::new` call (as a new
-    // function call site would create) should still find the
-    // value minted earlier in this process.
-    let entry = keyring::Entry::new(KEYRING_SERVICE, "device_key")
-        .expect("entry");
-    let hex_str = entry.get_password().expect("password read");
-    let bytes = hex::decode(hex_str.trim()).expect("hex decode");
+    // Independent read via the mock's stored password returns the
+    // same hex-encoded value.
+    let mock_ref: &MockCredential = entry
+        .get_credential()
+        .downcast_ref()
+        .expect("MockCredential downcast");
+    let stored = mock_ref
+        .get_password()
+        .expect("read back stored password");
+    let bytes = hex::decode(stored.trim()).expect("hex decode");
     assert_eq!(bytes.len(), 32);
-    assert_eq!(&bytes[..], &k1[..]);
-
-    // And `device_key_from_keyring` returns the same bytes again.
-    let k2 = device_key_from_keyring().expect("second mint");
-    assert_eq!(k1, k2);
-}
-
-#[test]
-fn device_key_mock_state_isolates_between_test_processes() {
-    // This is a behavioural check: the mock backend starts empty
-    // when a fresh builder is installed, so a process that
-    // installs its own builder will see an empty keyring. (We
-    // can't easily observe a separate process from here, but we
-    // can at least confirm that installing a new builder wipes
-    // the in-memory store by checking that the freshly minted key
-    // differs from a key minted under a previously-installed
-    // builder.)
-    install_mock_keyring();
-
-    let first_key = device_key_from_keyring().expect("first mint");
-    // Replace the builder with a fresh one — this clears the
-    // in-memory state.
-    let fresh = keyring::mock::default_credential_builder();
-    keyring::set_default_credential_builder(fresh);
-    let second_key = device_key_from_keyring().expect("second mint");
-
-    assert_eq!(first_key.len(), 32);
-    assert_eq!(second_key.len(), 32);
-    assert_ne!(
-        first_key, second_key,
-        "fresh builder means a fresh key"
-    );
+    assert_eq!(&bytes[..], &key[..]);
 }
 
 #[test]
 fn corrupted_keyring_value_returns_an_error() {
-    install_mock_keyring();
-    // Pre-seed a deliberately bad value under the real keyring
-    // slot. The production code is expected to refuse to use it.
-    let entry = keyring::Entry::new(KEYRING_SERVICE, "device_key")
-        .expect("entry");
-    entry
-        .set_password("not-valid-hex-zzzz")
-        .expect("seed bad value");
+    let entry = build_mock_entry();
 
-    let result = device_key_from_keyring();
+    // Pre-seed a deliberately bad value (non-hex). The production
+    // code must surface this rather than producing bad crypto.
+    set_mock_password(&entry, "not-valid-hex-zzzz");
+
+    let result = device_key_from_keyring(Some(&entry));
     assert!(
         result.is_err(),
         "non-hex keyring value must surface as an error, got {:?}",
@@ -122,48 +103,29 @@ fn corrupted_keyring_value_returns_an_error() {
     );
     let msg = result.unwrap_err();
     assert!(
-        msg.contains("hex") || msg.contains("length") || msg.contains("keyring"),
+        msg.contains("hex") || msg.contains("keyring"),
         "error should explain the failure mode, got: {msg}"
     );
 }
 
 #[test]
 fn wrong_length_keyring_value_returns_an_error() {
-    install_mock_keyring();
+    let entry = build_mock_entry();
+
     // 16 bytes (128 bits) instead of 32 — a valid hex, but the
     // wrong length. The production code must reject this rather
     // than truncating or padding.
-    let entry = keyring::Entry::new(KEYRING_SERVICE, "device_key")
-        .expect("entry");
-    entry
-        .set_password(&hex::encode([0u8; 16]))
-        .expect("seed short value");
+    set_mock_password(&entry, &hex::encode([0u8; 16]));
 
-    let result = device_key_from_keyring();
-    assert!(result.is_err(), "short key must be rejected");
-}
-
-#[test]
-fn local_encryption_key_returns_hex_of_stored_key() {
-    install_mock_keyring();
-    // Mint via the underlying primitive, then check the public
-    // Tauri-command surface returns the same value hex-encoded.
-    let stored = device_key_from_keyring().expect("mint");
-
-    // The Tauri command path needs a `tauri::State<StorePath>`
-    // wrapper, which is awkward to fabricate in a unit test.
-    // Instead, exercise the same code path inline: the production
-    // function body is just
-    //     `Ok(format!("keyring-{}", hex::encode(key)))`
-    // so reproduce that here to assert the contract without
-    // pulling in Tauri's State machinery.
-    let expected = format!("keyring-{}", hex::encode(stored));
-
-    // Sanity: prefix + 64 hex chars (32 bytes encoded).
-    assert!(expected.starts_with("keyring-"));
-    let hex_part = expected.strip_prefix("keyring-").unwrap();
-    assert_eq!(hex_part.len(), 64, "32 bytes → 64 hex chars");
-    let decoded = hex::decode(hex_part).expect("hex decode");
-    assert_eq!(decoded.len(), 32);
-    assert_eq!(&decoded[..], &stored[..]);
+    let result = device_key_from_keyring(Some(&entry));
+    assert!(
+        result.is_err(),
+        "short key must be rejected, got {:?}",
+        result
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("length") || msg.contains("keyring"),
+        "error should explain the failure mode, got: {msg}"
+    );
 }

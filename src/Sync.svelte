@@ -7,6 +7,16 @@
   let authToken = '';
   let tokenTouched = false;     // track whether user typed a token
 
+  // --- Sync passphrase (TASK-203 / CS-X1) ---
+  // A user-set passphrase enables cross-device sync: when two
+  // devices share the same passphrase they derive the same 32-byte
+  // AES key via HKDF-SHA256. Without a passphrase we fall back to
+  // a per-install random key (which only "syncs" with itself).
+  let passphrase = '';
+  let passphraseConfigured = false;
+  let passphraseBusy = false;
+  let passphraseError = null;
+
   // --- Sync state ---
   let syncing = false;
   let lastResult = null;        // SyncResult | null
@@ -32,9 +42,60 @@
       // Fall back silently — user can still type their own token.
       lastError = `local_encryption_key: ${e}`;
     }
+    // Query whether a sync passphrase is already configured. If
+    // it is, the auto-filled auth token above is the passphrase
+    // (returned by local_encryption_key when set) — that's fine,
+    // it works as the input. We just want the UI to show the
+    // current state so the user knows sync will round-trip.
+    try {
+      passphraseConfigured = await invoke('has_sync_passphrase');
+    } catch (e) {
+      passphraseConfigured = false;
+      passphraseError = `has_sync_passphrase: ${e}`;
+    }
     // Don't await — let it run in background, the button shows state.
     discoverPeers();
   });
+
+  async function savePassphrase() {
+    if (passphraseBusy) return;
+    if (!passphrase) return;
+    passphraseBusy = true;
+    passphraseError = null;
+    try {
+      await invoke('set_sync_passphrase', { passphrase });
+      passphraseConfigured = true;
+      // Re-fetch the auto-fill token — once the passphrase is set,
+      // local_encryption_key returns the passphrase itself, so the
+      // auth-token field should mirror the passphrase the user typed.
+      // If `authToken` hasn't been manually edited, refresh it.
+      const k = await invoke('local_encryption_key');
+      if (!tokenTouched && k) authToken = k;
+    } catch (e) {
+      passphraseError = `set_sync_passphrase: ${e}`;
+    } finally {
+      passphraseBusy = false;
+    }
+  }
+
+  async function clearPassphrase() {
+    if (passphraseBusy) return;
+    passphraseBusy = true;
+    passphraseError = null;
+    try {
+      await invoke('set_sync_passphrase', { passphrase: '' });
+      passphraseConfigured = false;
+      passphrase = '';
+      // Refresh the auto-fill token — without a passphrase, the
+      // random key is returned again.
+      const k = await invoke('local_encryption_key');
+      if (!tokenTouched && k) authToken = k;
+    } catch (e) {
+      passphraseError = `clear passphrase: ${e}`;
+    } finally {
+      passphraseBusy = false;
+    }
+  }
 
   async function discoverPeers() {
     if (discovering) return;
@@ -211,6 +272,56 @@
         token once the server supports it.
       </span>
     </label>
+
+    <div class="field passphrase" data-testid="sync-passphrase-field">
+      <label class="label" for="sync-passphrase">
+        Sync passphrase
+        {#if passphraseConfigured}
+          <span class="badge badge-ok" data-testid="sync-passphrase-badge">configured</span>
+        {:else}
+          <span class="badge badge-idle" data-testid="sync-passphrase-badge">not set</span>
+        {/if}
+      </label>
+      <div class="passphrase-row">
+        <input
+          id="sync-passphrase"
+          type="password"
+          autocomplete="off"
+          bind:value={passphrase}
+          placeholder={passphraseConfigured ? 'enter a new passphrase to replace' : 'type the same passphrase on each device'}
+          data-testid="sync-passphrase-input"
+          disabled={passphraseBusy}
+        />
+        <button
+          type="button"
+          class="secondary"
+          on:click={savePassphrase}
+          disabled={passphraseBusy || !passphrase}
+          data-testid="sync-passphrase-set"
+        >
+          {passphraseConfigured ? 'Change' : 'Set'}
+        </button>
+        {#if passphraseConfigured}
+          <button
+            type="button"
+            class="secondary danger"
+            on:click={clearPassphrase}
+            disabled={passphraseBusy}
+            data-testid="sync-passphrase-clear"
+          >
+            Clear
+          </button>
+        {/if}
+      </div>
+      <span class="hint">
+        Used to derive the device AES key via HKDF-SHA256. Two devices
+        with the same passphrase round-trip encrypted envelopes; without
+        it, syncing falls back to a per-install random key.
+      </span>
+      {#if passphraseError}
+        <p class="err" data-testid="sync-passphrase-error">{passphraseError}</p>
+      {/if}
+    </div>
 
     <button
       class="primary"
@@ -500,6 +611,50 @@
   .clear:hover { color: #e8e8f0; background: #22223d; }
 
   .muted { color: #64748b; font-size: 0.85rem; padding: 0.5rem 0; }
+
+  /* Sync passphrase (TASK-203 / CS-X1) */
+  .passphrase-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: stretch;
+  }
+  .passphrase-row input {
+    flex: 1;
+  }
+  .secondary {
+    background: #1a1a2e;
+    color: #e8e8f0;
+    border: 1px solid #3a3a5a;
+    padding: 0 0.85rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .secondary:hover:not(:disabled) { background: #2a2a4a; }
+  .secondary:disabled { opacity: 0.55; cursor: not-allowed; }
+  .secondary.danger {
+    border-color: #b91c1c;
+    color: #fca5a5;
+  }
+  .secondary.danger:hover:not(:disabled) {
+    background: rgba(239,68,68,0.15);
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 0.1rem 0.4rem;
+    border-radius: 8px;
+    letter-spacing: 0.05em;
+    margin-left: 0.4rem;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+  .badge-ok   { background: rgba(34,197,94,0.2); color: #86efac; }
+  .badge-idle { background: rgba(148,163,184,0.15); color: #94a3b8; }
+  .err { color: #fca5a5; font-size: 0.8rem; margin: 0.4rem 0 0; }
 
   .history-list { list-style: none; margin: 0; padding: 0; }
   .history-item {

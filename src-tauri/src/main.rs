@@ -18,7 +18,7 @@ use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 
-use sync_command::{local_encryption_key, sync_now};
+use sync_command::{has_sync_passphrase, local_encryption_key, set_sync_passphrase, sync_now};
 use peer_discovery::discover_peers;
 use xkg::{
     capture_html, continue_in_browser, default_db_path, get_conversation_messages, graph_link,
@@ -133,6 +133,8 @@ fn main() {
             continue_in_browser,
             sync_now,
             local_encryption_key,
+            set_sync_passphrase,
+            has_sync_passphrase,
             discover_peers,
         ])
         .setup(|app| {
