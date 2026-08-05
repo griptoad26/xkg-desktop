@@ -23,6 +23,7 @@
 //! MVP behaviour. A proper KDF (Argon2id / HKDF) lands in a later phase.
 
 use serde::Serialize;
+use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use xkg_core::capture::CaptureStore;
 use xkg_core::sync::{Device, SyncClient, SyncError};
@@ -51,40 +52,115 @@ pub struct SyncResult {
     pub messages_uploaded: usize,
 }
 
-/// Derive a deterministic 32-byte AES-256 key from `token` using SHA-256.
+// HKDF parameters shared with the mobile side (TASK-203 CS-X1).
+// Both clients MUST use exactly these constants or envelopes produced
+// on one platform won't decrypt on the other.
+const HKDF_SALT: &[u8] = b"xkg-v1";
+const HKDF_INFO: &[u8] = b"sync-encryption-v1";
+
+/// Derive a deterministic 32-byte AES-256 key from `token` using HKDF-SHA256.
 ///
-/// MVP only. Phase 5+ should swap this for an Argon2id / HKDF derivation
-/// keyed on a server-issued password.
+/// MUST stay byte-for-byte compatible with the mobile side's
+/// `SyncCrypto.hkdfKey()` so a passphrase entered on one platform
+/// produces the same 32-byte key on the other.
+///
+///   - salt:    "xkg-v1"
+///   - info:    "sync-encryption-v1"
+///   - output:  32 bytes
 pub fn derive_key(token: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"xkg-desktop/v0.2.0/sync-key/");
-    hasher.update(token.as_bytes());
-    let out = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&out);
-    key
+    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), token.as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(HKDF_INFO, &mut okm)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    okm
 }
 
-/// Compute a placeholder local "auth token" derived from the db path.
+/// Service name used when storing the device key in the OS keyring.
+/// Picked once and never changed — changing it would orphan the
+/// keyring entry on every user's machine.
+pub const KEYRING_SERVICE: &str = "xkg-desktop";
+/// User/account name within the keyring. Distinct from any OS
+/// account name; this is just the keychain account slot.
+pub const KEYRING_USER: &str = "device_key";
+
+/// Look up (or mint) the 32-byte device encryption key in the OS
+/// keyring.
+///
+///   * If a key already exists under
+///     `(KEYRING_SERVICE, KEYRING_USER)`, it's read out and returned
+///     as hex.
+///   * Otherwise, 32 fresh bytes from `getrandom` are stored and
+///     returned.
+///
+/// This is the storage layer for the key that `local_encryption_key`
+/// hands back to the UI. The actual AES key derivation still goes
+/// through [`derive_key`] — i.e. when the user clicks "Sync now" with
+/// this token, the on-the-wire key is
+/// `SHA256("xkg-desktop/v0.2.0/sync-key/" || token)`. The keyring
+/// just removes the previous "hash the DB path" fallback that
+/// CS-X3 flagged: the per-install entropy now lives in the OS
+/// secure store instead of in a directory path.
+///
+/// The `store_path` parameter is kept for ABI compatibility with
+/// `tauri::command` callers, but is no longer used.
+pub fn device_key_from_keyring() -> Result<[u8; 32], String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .map_err(|e| format!("keyring entry: {e}"))?;
+    match entry.get_password() {
+        Ok(hex_str) => {
+            let bytes = hex::decode(hex_str.trim())
+                .map_err(|e| format!("keyring value not hex: {e}"))?;
+            if bytes.len() != 32 {
+                return Err(format!(
+                    "keyring value wrong length ({} bytes, expected 32)",
+                    bytes.len()
+                ));
+            }
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&bytes);
+            Ok(out)
+        }
+        Err(keyring::Error::NoEntry) => {
+            // First run on this machine: mint a random 32-byte key
+            // and persist it.
+            let mut key = [0u8; 32];
+            getrandom_bytes(&mut key)
+                .map_err(|e| format!("mint device key: {e}"))?;
+            entry
+                .set_password(&hex::encode(key))
+                .map_err(|e| format!("store device key: {e}"))?;
+            Ok(key)
+        }
+        Err(e) => Err(format!("read keyring: {e}")),
+    }
+}
+
+/// Fill `buf` with `buf.len()` cryptographically random bytes via
+/// the `getrandom` crate. Cross-platform: uses BCryptGenRandom on
+/// Windows, getrandom(2) on Linux, SecRandomCopyBytes on macOS.
+fn getrandom_bytes(buf: &mut [u8]) -> Result<(), String> {
+    getrandom::getrandom(buf).map_err(|e| format!("getrandom: {e}"))
+}
+
+/// Compute a placeholder local "auth token" backed by the OS keyring.
 /// Used when the user hasn't entered an explicit token.
 ///
-/// This is intentionally weak — real auth is a separate story. All it
-/// needs to do is let the local encryption key be deterministic across
-/// devices owned by the same user.
+/// On first run this mints a fresh 32-byte random key, stores it in
+/// the OS keyring, and returns the hex of that key. On subsequent
+/// runs the same key is read out of the keyring and returned.
+///
+/// The returned token is opaque from the UI's perspective — it's
+/// only fed back into [`sync_now`] where [`derive_key`] turns it
+/// into the actual AES key. Storing entropy in the OS keyring
+/// (instead of deriving it from the DB path) is what CS-X3 asked
+/// for: the on-disk DB path is no longer part of the encryption
+/// key material.
 #[tauri::command]
 pub fn local_encryption_key(
-    store_path: tauri::State<'_, StorePath>,
+    _store_path: tauri::State<'_, StorePath>,
 ) -> Result<String, String> {
-    // Hash the DB path to get a stable per-install seed. Includes the
-    // app name so two apps on the same machine don't collide.
-    let mut hasher = Sha256::new();
-    hasher.update(b"xkg-desktop/v0.2.0/local-token/");
-    hasher.update(store_path.0.display().to_string().as_bytes());
-    let digest = hasher.finalize();
-    Ok(format!(
-        "local-{}",
-        &hex::encode(&digest[..8])
-    ))
+    let key = device_key_from_keyring()?;
+    Ok(format!("keyring-{}", hex::encode(key)))
 }
 
 /// Run a single sync: register device → bundle everything since 0 → upload.

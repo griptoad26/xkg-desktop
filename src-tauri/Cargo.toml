@@ -23,6 +23,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-shell = "2"
+# TASK-203 (CS-X1): HKDF-SHA256 to derive the cross-platform device
+# key. Must use the same salt/info/output-length as the mobile side
+# (xkg-mobile-flutter lib/sync/sync_crypto.dart SyncCrypto.hkdfKey).
+hkdf = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -39,6 +43,16 @@ urlencoding = "2.1"
 ulid = "1.1"
 sha2 = "0.10"
 hex = "0.4"
+# TASK-203: Store the device encryption key in the OS keyring
+# (Keychain on macOS, Secret Service on Linux, Credential Manager on
+# Windows) instead of deriving it from the on-disk DB path. Addresses
+# audit finding CS-X3.
+keyring = "2"
+# Cryptographically secure RNG used to mint a fresh 32-byte device
+# key on first launch. Tiny dep (~no transitive cost) and cross-
+# platform (uses BCryptGenRandom on Windows, getrandom(2) on Linux,
+# SecRandomCopyBytes on macOS).
+getrandom = "0.2"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
